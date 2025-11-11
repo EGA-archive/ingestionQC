@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 #
+# test
 # Purpose:
 #   Perform lightweight integrity checks on common NGS file types before they
 #   enter downstream pipelines. Exactly ONE line per file is printed:
