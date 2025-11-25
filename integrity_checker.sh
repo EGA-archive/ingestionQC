@@ -140,11 +140,13 @@ check_variant_sorted() {
     # - BCF  -> bcftools view -Ov (requires bcftools installed)
     # - .gz  -> zcat
     # - else -> cat
-    if [[ "$in" == *.bcf ]]; then
+    if [[ "$in" == *.bcf || "$in" == *.bcf.gz || "$in" == *.bcf.bz2 ]]; then
         # BCF: convert to VCF stream
         bcftools view -Ov "$in" 2>/dev/null
-    elif [[ "$in" == *.gz ]]; then
+    elif [[ "$in" == *vcf.gz ]]; then
         zcat "$in" 2>/dev/null
+    elif [[ "$in" == *vcf.bz2 ]]; then
+        bzcat "$in" 2>/dev/null
     else
         cat "$in"
     fi | awk -F'\t' '
@@ -211,7 +213,8 @@ for file in "$@"; do
         *.cram|*.cram.gz)
             check_cram "$file" ;;
         *.vcf|*.vcf.gz|*.bcf|*.bcf.gz|*.vcf.bz2|*.bcf.bz2)
-            check_vcf "$file" ;;
+            check_vcf "$file" 
+            check_variant_sorted "$file" ;; 
         *)
             fail "FILE" "$file" "unsupported extension; skipping" ;;
     esac
