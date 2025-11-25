@@ -30,6 +30,7 @@ ok()   { echo "[OK] $1 $2 - $3"; }
 fail() { echo "[FAIL] $1 $2 - $3"; }
 err()  { echo "[ERROR] $1 $2 - $3"; exit 1; }
 
+
 ##############################################################################
 # FASTQ
 ##############################################################################
@@ -126,6 +127,72 @@ check_vcf() {
         err "$type" "$f" "bcftools failed parsing within first ${VCF_RECORDS} records"
     fi
 }
+
+check_variant_sorted() {
+    local in="$1"
+
+    if [[ -z "$in" ]]; then
+        echo "Usage: check_variant_sorted <file.vcf[.gz]|file.bcf>" >&2
+        return 2
+    fi
+
+    # Choose how to read the file:
+    # - BCF  -> bcftools view -Ov (requires bcftools installed)
+    # - .gz  -> zcat
+    # - else -> cat
+    if [[ "$in" == *.bcf ]]; then
+        # BCF: convert to VCF stream
+        bcftools view -Ov "$in" 2>/dev/null
+    elif [[ "$in" == *.gz ]]; then
+        zcat "$in" 2>/dev/null
+    else
+        cat "$in"
+    fi | awk -F'\t' '
+        BEGIN {
+            last_tid = -1
+            last_pos = -1
+            nctg = 0
+        }
+
+        # Collect contigs from header
+        /^##contig=/ {
+            if (match($0, /ID=([^,>]+)/, a)) {
+                cid = a[1]
+                if (!(cid in tid)) {
+                    tid[cid] = nctg
+                    nctg++
+                }
+            }
+            next
+        }
+
+        # Skip other header lines
+        /^#/ { next }
+
+        # Variant lines
+        {
+            chrom = $1
+            pos   = $2 + 0
+
+            # If chrom not in header, append at end
+            if (!(chrom in tid)) {
+                tid[chrom] = nctg
+                nctg++
+            }
+            t = tid[chrom]
+
+            # Same logic as HTSlib: (tid, pos) must not go backwards
+            if (t < last_tid || (t == last_tid && pos < last_pos)) {
+                printf("UNSORTED at %s:%d\n", chrom, pos) > "/dev/stderr"
+                exit 1
+            }
+
+            last_tid = t
+            last_pos = pos
+        }
+    '
+}
+
 
 ##############################################################################
 # Main
