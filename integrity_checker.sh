@@ -26,6 +26,7 @@ set -e  # abort on command failure
 FASTQ_LINES=40000      # FASTQ lines inspected
 BAM_EOF_BYTES=32768    # bytes read from end of BAM for EOF validation
 VCF_RECORDS=10000      # VCF/BCF records parsed
+HUM_REF_GENOME=("hg16", "hg17", "hg18", "GRCh37", "GRCh38", "T2T")  # human reference genome names
 
 ok()   { echo "[OK] $1 $2 - $3"; }
 fail() { echo "[FAIL] $1 $2 - $3"; }
@@ -92,6 +93,22 @@ check_bam() {
     rm -f "$tail_tmp"
 
     ok "$type" "$f" "header OK; EOF magic present"
+
+    # Human reference genome check
+    if ! command -v refgenDetector >/dev/null 2>&1; then
+        fail "$type" "$f" "refgenDetector not found; human reference genome check skipped"
+        return
+    fi
+    
+    printf "$f" > tmp.txt
+    ref=$(refgenDetector -p tmp.txt -t BAM/CRAM | tail -n 1)
+    ref="${ref##*, }"
+    if [[ ${HUM_REF_GENOME[@]} =~ $ref ]]; then
+        ok "$type" "$f" "BAM file is human"
+    else
+        err "$type" "$f" "BAM file is not human"
+    fi
+
 }
 
 ##############################################################################
