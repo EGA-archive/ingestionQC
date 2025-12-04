@@ -13,7 +13,7 @@
 #             MD5 (M5) tags (missing M5 ⇒ ERROR)
 #   • VCF   : parse the header plus the first 10 000 variant records with
 #             bcftools head (fatal parse ⇒ ERROR)
-#           : verify that variants are sorted according to HTSlib rules
+#           : verify that VCF/BCF files are sorted according to HTSlib rules
 #
 # Exit status
 #   • Any ERROR terminates execution immediately (set -e).
@@ -75,6 +75,13 @@ check_bam() {
         err "$type" "$f" "header missing @HD/@SQ"
     fi
 
+    # Sortedness by coordinate
+    if samtools view -H "$f" | grep "@HD" | grep -o "SO:[^[:space:]]*" | cut -d: -f2 == "coordinate"; then
+        ok "$type" "$f" "header OK; @CO lines present"
+    else
+        err "$type" "$f" "BAM not sorted by coordinate"
+    fi
+
     # EOF marker
     local tail_tmp; tail_tmp=$(mktemp)
     tail -c "$BAM_EOF_BYTES" "$f" > "$tail_tmp" 2>/dev/null || true
@@ -101,6 +108,13 @@ check_cram() {
     # Header presence
     if ! samtools view -H "$f" 2>/dev/null | head -n 500 | grep -Eq '^@HD|^@SQ'; then
         err "$type" "$f" "header missing @HD/@SQ"
+    fi
+
+    # Sortedness by coordinate
+    if samtools view -H "$f" | grep "@HD" | grep -o "SO:[^[:space:]]*" | cut -d: -f2 == "coordinate"; then
+        ok "$type" "$f" "header OK; @CO lines present"
+    else
+        err "$type" "$f" "CRAM not sorted by coordinate"
     fi
 
     # Reference MD5 tags (now REQUIRED)
