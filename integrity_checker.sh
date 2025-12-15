@@ -100,11 +100,12 @@ check_bam() {
         fail "$type" "$f" "refgenDetector not found; human reference genome check skipped"
         return
     fi
-    
-    printf "$f" > tmp.txt
-    ref=$(refgenDetector -p tmp.txt -t BAM/CRAM | tail -n 1)
-    ref="${ref##*, }"
-    if [[ ${HUM_REF_GENOME[@]} =~ $ref ]]; then
+
+    ref=$(refgenDetector_main.py -f "$f" -t BAM/CRAM 
+        | awk -F'Species detected:[[:space:]]*' '/Species detected:/ {print $2}' \
+        | xargs)
+
+    if [[ "$ref" == "Homo sapiens" ]]; then
         ok "$type" "$f" "BAM file is human"
     else
         err "$type" "$f" "BAM file is not human"
@@ -141,6 +142,21 @@ check_cram() {
         ok "$type" "$f" "header OK; M5 reference MD5 tags present"
     else
         err "$type" "$f" "header OK; missing required M5 reference MD5 tags"
+    
+        # Human reference genome check
+    if ! command -v refgenDetector >/dev/null 2>&1; then
+        fail "$type" "$f" "refgenDetector not found; human reference genome check skipped"
+        return
+    fi
+
+    ref=$(refgenDetector_main.py -f "$f" -t BAM/CRAM 
+        | awk -F'Species detected:[[:space:]]*' '/Species detected:/ {print $2}' \
+        | xargs)
+
+    if [[ "$ref" == "Homo sapiens" ]]; then
+        ok "$type" "$f" "BAM file is human"
+    else
+        err "$type" "$f" "BAM file is not human"
     fi
 }
 
