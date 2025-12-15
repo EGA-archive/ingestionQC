@@ -26,7 +26,7 @@ set -e  # abort on command failure
 FASTQ_LINES=40000      # FASTQ lines inspected
 BAM_EOF_BYTES=32768    # bytes read from end of BAM for EOF validation
 VCF_RECORDS=10000      # VCF/BCF records parsed
-HUM_REF_GENOME=("hg16", "hg17", "hg18", "GRCh37", "GRCh38", "T2T")  # human reference genome names
+HUM_REF_GENOME=("hg16" "hg17" "hg18" "GRCh37" "GRCh38" "T2T")  # human reference genome names
 
 ok()   { echo "[OK] $1 $2 - $3"; }
 fail() { echo "[FAIL] $1 $2 - $3"; }
@@ -131,7 +131,8 @@ check_cram() {
     fi
 
     # Sortedness by coordinate
-    if samtools view -H "$f" | grep "@HD" | grep -o "SO:[^[:space:]]*" | cut -d: -f2 == "coordinate"; then
+    sorted=$(samtools view -H "$f" | grep "@HD" | grep -o "SO:[^[:space:]]*" | cut -d: -f2)
+    if [[ "$sorted" == "coordinate" ]] ; then
         ok "$type" "$f" "header OK; @CO lines present"
     else
         err "$type" "$f" "CRAM not sorted by coordinate"
@@ -142,8 +143,9 @@ check_cram() {
         ok "$type" "$f" "header OK; M5 reference MD5 tags present"
     else
         err "$type" "$f" "header OK; missing required M5 reference MD5 tags"
-    
-        # Human reference genome check
+    fi
+
+    # Human reference genome check
     if ! command -v refgenDetector >/dev/null 2>&1; then
         fail "$type" "$f" "refgenDetector not found; human reference genome check skipped"
         return
@@ -154,9 +156,9 @@ check_cram() {
         | xargs)
 
     if [[ "$ref" == "Homo sapiens" ]]; then
-        ok "$type" "$f" "BAM file is human"
+        ok "$type" "$f" "CRAM file is human"
     else
-        err "$type" "$f" "BAM file is not human"
+        err "$type" "$f" "CRAM file is not human"
     fi
 }
 
