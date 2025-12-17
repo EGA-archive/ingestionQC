@@ -96,7 +96,7 @@ check_bam() {
     ok "$type" "$f" "header OK; EOF magic present"
 
     # Human reference genome check
-    if ! command -v refgenDetector >/dev/null 2>&1; then
+    if ! command -v refgenDetector_main.py >/dev/null 2>&1; then
         fail "$type" "$f" "refgenDetector not found; human reference genome check skipped"
         return
     fi
@@ -146,7 +146,7 @@ check_cram() {
     fi
 
     # Human reference genome check
-    if ! command -v refgenDetector >/dev/null 2>&1; then
+    if ! command -v refgenDetector_main.py >/dev/null 2>&1; then
         fail "$type" "$f" "refgenDetector not found; human reference genome check skipped"
         return
     fi
