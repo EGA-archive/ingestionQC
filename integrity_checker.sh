@@ -101,7 +101,7 @@ check_bam() {
         return
     fi
 
-    ref=$(refgenDetector_main.py -f "$f" -t BAM/CRAM 
+    ref=$(refgenDetector_main.py -f "$f" -t BAM/CRAM \
         | awk -F'Species detected:[[:space:]]*' '/Species detected:/ {print $2}' \
         | xargs)
 
@@ -151,7 +151,7 @@ check_cram() {
         return
     fi
 
-    ref=$(refgenDetector_main.py -f "$f" -t BAM/CRAM 
+    ref=$(refgenDetector_main.py -f "$f" -t BAM/CRAM \
         | awk -F'Species detected:[[:space:]]*' '/Species detected:/ {print $2}' \
         | xargs)
 
