@@ -277,108 +277,42 @@ check_cram() {
 ##############################################################################
 check_vcf() {
     local f="$1" type="VCF/BCF"
+    begin_file "$type" "$f"
 
-    if ! command -v bcftools >/dev/null 2>&1; then
-        fail "$type" "$f" "bcftools not found; VCF/BCF check skipped"
-        return
+    # ----- tool check -----
+    if ! command -v VCFX_validator >/dev/null 2>&1; then
+        fail "$type" "$f" "VCFX_validator not found"
+        end_file; return $?
     fi
 
-    if bcftools head -n "$VCF_RECORDS" "$f" >/dev/null 2>&1; then
-        ok "$type" "$f" "bcftools parsed header + first ${VCF_RECORDS} records"
-    else
-        err "$type" "$f" "bcftools failed parsing within first ${VCF_RECORDS} records"
+    local vout rc errs
+    vout=$(VCFX_validator -i "$f" 2>&1)
+    rc=$?
+
+    # PASS condition: explicit status line
+    if printf '%s\n' "$vout" | grep -q '^Status:[[:space:]]*PASSED'; then
+        ok "$type" "$f" "validator passed"
+        end_file; return $?
     fi
+
+    # Collect all error lines (join with '; ' like FASTQ)
+    errs=$(
+        printf '%s\n' "$vout" \
+        | grep -E '^Error:' \
+        | tr '\n' '; ' \
+        | sed 's/; $//'
+    )
+
+    if [[ -z "$errs" ]]; then
+        # fallback: if validator failed but didn't print "Error:" lines
+        # include first line (keeps one-line policy)
+        errs=$(printf '%s\n' "$vout" | head -n 1)
+        [[ -z "$errs" ]] && errs="VCFX_validator failed (rc=$rc) with no output"
+    fi
+
+    err "$type" "$f" "$errs"
+    end_file; return $?
 }
-
-check_variant_sorted() {
-    local f="$1" type="VCF/BCF"
-
-    if [[ -z "$f" ]]; then
-        fail "$type" "$f" "no file given; sortedness check skipped"
-        return
-    fi
-
-    # If BCF-like, we need bcftools to convert to VCF text
-    if [[ "$f" == *.bcf || "$f" == *.bcf.gz || "$f" == *.bcf.bz2 ]]; then
-        if ! command -v bcftools >/dev/null 2>&1; then
-            fail "$type" "$f" "bcftools not found; sortedness check skipped for BCF"
-            return
-        fi
-    fi
-
-    # Run the sortedness check; capture first offending locus if unsorted.
-    # awk prints "chr:pos" and exits 1 on the first out-of-order record,
-    # or prints nothing and exits 0 if everything is sorted.
-    local unsorted_at=""
-    if ! unsorted_at=$(
-        if [[ "$f" == *.bcf || "$f" == *.bcf.gz || "$f" == *.bcf.bz2 ]]; then
-            # Any BCF (compressed or not) → VCF stream via bcftools
-            bcftools view -Ov "$f" 2>/dev/null
-        elif [[ "$f" == *.vcf.bz2 ]]; then
-            bzcat "$f" 2>/dev/null
-        elif [[ "$f" == *.vcf.gz ]]; then
-            zcat "$f" 2>/dev/null
-        else
-            cat "$f"
-        fi | awk -F'\t' '
-            BEGIN {
-                last_tid = -1
-                last_pos = -1
-                nctg = 0
-            }
-
-            # Collect contigs from header
-            /^##contig=/ {
-                if (match($0, /ID=([^,>]+)/, a)) {
-                    cid = a[1]
-                    if (!(cid in tid)) {
-                        tid[cid] = nctg
-                        nctg++
-                    }
-                }
-                next
-            }
-
-            # Skip other header lines
-            /^#/ { next }
-
-            # Variant lines
-            {
-                chrom = $1
-                pos   = $2 + 0
-
-                # If chrom not in header, append at end
-                if (!(chrom in tid)) {
-                    tid[chrom] = nctg
-                    nctg++
-                }
-                t = tid[chrom]
-
-                # Same logic as HTSlib: (tid, pos) must not go backwards
-                if (t < last_tid || (t == last_tid && pos < last_pos)) {
-                    # Print first offending locus to stdout and exit non-zero
-                    printf("%s:%d\n", chrom, pos)
-                    exit 1
-                }
-
-                last_tid = t
-                last_pos = pos
-            }
-        '
-    ); then
-        # Non-zero exit from awk / pipeline
-        if [[ -n "$unsorted_at" ]]; then
-            err "$type" "$f" "variants not sorted by contig/POS (first offending locus: $unsorted_at)"
-        else
-            err "$type" "$f" "sortedness scan failed (parse or I/O error)"
-        fi
-    else
-        ok "$type" "$f" "variants sorted by contig/POS"
-    fi
-}
-
-
-
 
 
 ##############################################################################
