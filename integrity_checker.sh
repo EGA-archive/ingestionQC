@@ -36,24 +36,32 @@ begin_file() {
     _ERRS=()
 }
 
-ok()   { _OKS+=("[OK] $1 $2 - $3"); }
-fail() { _FAILS+=("[FAIL] $1 $2 - $3"); }
-err()  { _ERRS+=("[ERROR] $1 $2 - $3"); }
+ok()   { _OKS+=("$3"); }
+fail() { _FAILS+=("$3"); }
+err()  { _ERRS+=("$3"); }
+
 
 end_file() {
+  local msg
+
   if ((${#_ERRS[@]})); then
-    printf '%s\n' "${_ERRS[@]}"
+    msg=$(printf '%s; ' "${_ERRS[@]}")
+    msg=${msg%; }   # remove trailing "; "
+    printf '[ERROR] %s %s - %s\n' "$_cur_type" "$_cur_file" "$msg"
     return 1
   fi
 
   if ((${#_FAILS[@]})); then
-    printf '%s\n' "${_FAILS[@]}"
+    msg=$(printf '%s; ' "${_FAILS[@]}")
+    msg=${msg%; }
+    printf '[FAIL] %s %s - %s\n' "$_cur_type" "$_cur_file" "$msg"
     return 0
   fi
 
   printf '[OK] %s %s - file OK\n' "$_cur_type" "$_cur_file"
   return 0
 }
+
 
 FASTQ_LINES=40000      # FASTQ lines inspected
 BAM_EOF_BYTES=32768    # bytes read from end of BAM for EOF validation
@@ -356,10 +364,7 @@ case "$file" in
   *.vcf|*.vcf.gz|*.bcf|*.bcf.gz|*.vcf.bz2|*.bcf.bz2)
     # keep your current VCF calls for now
     check_vcf "$file"
-    rc1=$?
-    # if either fails, fail
-    (( rc1 != 0 || rc2 != 0 )) && exit 1
-    exit 0
+    exit $?
     ;;
   *)
     echo "[WARNING] FILE $file - unsupported extension; skipping"
