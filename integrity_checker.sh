@@ -185,12 +185,12 @@ check_bam() {
     rm -f "$hdr_tmp"
 
     # Human reference genome check
-    if ! command -v refgenDetector_main.py >/dev/null 2>&1; then
+    if ! command -v refgenDetector >/dev/null 2>&1; then
         fail "$type" "$f" "refgenDetector not found"
         end_file; return $?
     fi
 
-    species=$(refgenDetector_main.py -f "$f" -t BAM/CRAM 2>/dev/null \
+    species=$(refgenDetector -f "$f" -t BAM/CRAM 2>/dev/null \
         | awk -F'Species detected:[[:space:]]*' '/Species detected:/ {print $2}' \
         | xargs)
 
@@ -258,13 +258,13 @@ check_cram() {
     rm -f "$hdr_tmp"
 
     # Human reference genome check
-    if ! command -v refgenDetector_main.py >/dev/null 2>&1; then
+    if ! command -v refgenDetector >/dev/null 2>&1; then
         fail "$type" "$f" "refgenDetector not found"
         end_file; return $?
     fi
 
     species=$(
-        refgenDetector_main.py -f "$f" -t BAM/CRAM 2>/dev/null \
+        refgenDetector -f "$f" -t BAM/CRAM 2>/dev/null \
         | awk -F'Species detected:[[:space:]]*' '/Species detected:/ {print $2}' \
         | xargs
     )
