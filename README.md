@@ -34,39 +34,44 @@ Each file produces a single summary line of output.
 
 - Inspects the first **500 header lines** using `samtools` to confirm presence of essential tags (`@HD` and/or `@SQ`).
 - Verifies presence of the BAM-specific EOF marker (`42430200`) within the last 32 KB, ensuring the file isn't truncated.
+- Checks if file is sorted by corrdinates
+- Checks if file is human with refgenDetector 
 - Output:
-  - `[OK]` if header and EOF marker are valid
-  - `[ERROR]` if header is malformed or EOF marker is missing
-  - `[WARNING]` if `samtools` is missing
+  - `[OK]` if all checks are okay
+  - `[ERROR]` collected error messages of all checks performed
+  - `[WARNING]` if any tools are missing
 
 ### 3. CRAM (`.cram`, `.cram.gz`)
 
 - Checks the first **500 header lines** using `samtools` for essential header tags (`@HD` and/or `@SQ`).
 - Verifies presence of reference **MD5 checksum (M5)** tags in the header.
+- Checks if file is sorted by corrdinates
+- Checks if file is human with refgenDetector 
 - Output:
-  - `[OK]` if header and M5 tags are present
-  - `[ERROR]` if M5 tags are missing
-  - `[ERROR]` if header is invalid
-  - `[WARNING]` if `samtools` is missing
+  - `[OK]` if all checks are okay
+  - `[ERROR]` collected error messages of all checks performed
+  - `[WARNING]` if any tools are missing
 
 ### 4. VCF/BCF (`.vcf`, `.vcf.gz`, `.bcf`, `.bcf.gz`, `.vcf.bz2`, `.bcf.bz2`)
 
-- Parses the file header and the first **10,000 variant records** using `bcftools head`.
+- Verifies compliance to VCF 4.x specifications and sortendess by VCFX_validator
 - Rapidly identifies fatal syntax, format, or specification errors.
 - Output:
-  - `[OK]` if parsing succeeds
-  - `[ERROR]` if parsing fails
-  - `[WARNING]` if `bcftools` is missing
+  - `[OK]` if VCFX_validator runs without errors
+  - `[ERROR]` VCFX_validator error message
+  - `[WARNING]` if tool is missing
 
 ## Dependencies
 
 | Tool                                                          | Purpose                |
 | ------------------------------------------------------------- | ---------------------- |
 | **bash** ≥4                                                   | scripting language     |
-| GNU **coreutils** (`head`, `tail`, `grep`, `xxd`)             | basic ops              |
+| GNU **coreutils** (`mktemp`,`head`, `tail`, `grep`, `xxd`, `awk`, `sed`, `cut`, `tr`, `xargs`, `gunzip`, `zcat`, `bzcat`)             | basic ops              |
 | [`fastQValidator`](https://github.com/statgen/fastqvalidator) | FASTQ validation       |
 | [`samtools`](https://www.htslib.org/)                         | BAM/CRAM header checks |
-| [`bcftools`](https://www.htslib.org/)                         | VCF/BCF parsing        |
+| [`refgenDetector`](https://github.com/EGA-archive/refgenDetector) | human check|
+| [`VCFX_validator`](https://ieeta-pt.github.io/VCFX/installation/) | VCF/BCF validation |
+
 
 Ensure each tool is on your `$PATH`.
 
@@ -93,7 +98,7 @@ The script auto‑detects the format and prints status messages for each file.
 | ------------ | ----------------------------------------------------------------------- |
 | `[OK]`       | File passed all checks.                                                 |
 | `[WARNING]`  | Recommended software not available.                                     |
-| `[ERROR]`    | Fatal issue; script terminates immediately.                             |
+| `[ERROR]`    | Fatal issue; Errors are collected and printed separated by ; (one line).|
 
 A pass indicates that the *sampled portion* is valid; it does **not** guarantee that the entire file is error‑free.
 
