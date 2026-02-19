@@ -164,15 +164,18 @@ check_bam() {
         end_file
         return $?      
     fi
-    
+    ok "$type" "$f" "header readable"
+
+    # Alignment check via @SQ presence
     if ! grep -q '^@SQ' "$hdr_tmp"; then
-        err "$type" "$f" "BAM header missing @SQ lines"
+        ok "$type" "$f" "no @SQ in header -> treating as UNALIGNED; skipping sortedness/refgen checks"
         rm -f "$hdr_tmp"
         end_file
         return $?      
     fi
     
-    ok "$type" "$f" "header readable; @SQ present"
+    # Aligned: continue with exisiting checks
+    ok "$type" "$f" "@SQ present -> treating as ALIGNED; continuing checks"
     
     # Sortedness by coordinate
     sorted=$(grep -m1 '^@HD' "$hdr_tmp" | grep -oE "SO:[^[:space:]]*" | cut -d: -f2)
