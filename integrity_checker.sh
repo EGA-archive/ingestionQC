@@ -62,10 +62,57 @@ end_file() {
   return 0
 }
 
+usage() {
+    echo "Usage: $0 [OPTIONS] -f <file> -s <samples>"
+    echo "Options:"
+    echo "  -r, --run           Run mode (default)"
+    echo "  -a, --analysis      Analysis mode (skips some checks)"
+    echo "  -f, --file FILE     Input file to check"
+    echo "  -s, --samples SAMPLES   Sample identifiers (comma-separated)"
+    echo "  -h, --help          Show this help message and exit"
+    exit 1
+}
 
 FASTQ_LINES=40000      # FASTQ lines inspected
 BAM_EOF_BYTES=32768    # bytes read from end of BAM for EOF validation
 VCF_RECORDS=10000      # VCF/BCF records parsed
+mode=""                # run or analysis
+file=""                # input file path
+samples=""             # sample identifiers (comma-separated)
+
+#get options and arguments 
+while [[ $# -gt 0 ]]; do
+    case "$1" in 
+        -r|-run) mode="run"; shift ;; #shift removes this option from the list of arguments; next iteration will process the next one
+        -a|--analysis) mode="analysis"; shift ;;
+        -f|--file) 
+            [[ $# -lt 2 ]] && { echo "ERROR: -file requires an argument"; usage;}
+            file="$2"; shift 2 ;; 
+        -s|--samples) 
+            [[ $# -lt 2 ]] && { echo "ERROR: -samples requires an argument"; usage;}
+            samples="$2"; shift 2 ;;
+        -h|--help) usage ;;
+        *) echo "ERROR: Unknown option $1"; usage ;;
+    esac
+done
+
+#validation of arguments 
+if [[ -z "$mode" ]]; then
+  echo "Error: you must specify either -run or -analysis"
+  usage
+fi
+
+if [[ -z "$file" ]]; then
+  echo "Error: -file is required"
+  usage
+fi
+
+if [[ -z "$samples" ]]; then
+  echo "Error: -samples is required"
+  usage
+fi
+
+
 
 
 
@@ -348,8 +395,6 @@ if [[ ! -f "$file" ]]; then
     echo "[ERROR] FILE $file - not found"
     exit 1
 fi
-
-
 
 case "$file" in
   *.fastq|*.fastq.gz|*.fq|*.fq.gz)
