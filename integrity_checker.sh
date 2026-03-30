@@ -21,8 +21,8 @@
 #   • OK indicates the file passed the implemented checks.
 # ---------------------------------------------------------------------------
 
-set +e  # aggregates errors; we do not want to abort afer the first failure
-set -o pipefail
+set +e  # aggregates errors; we do not want to abort afer the first failure but collect all possible issues
+set -o pipefail # ensures that if any command in a pipeline fails, the entire pipeline is considered to have failed (i.e., it will return a non-zero exit status). This is important for error handling, especially when using tools like grep or awk in pipelines, as it allows us to detect failures that might otherwise be masked by successful commands later in the pipeline.
 
 declare -a _OKS _FAILS _ERRS
 _cur_type=""
@@ -83,7 +83,7 @@ samples=""             # sample identifiers (comma-separated)
 #get options and arguments 
 while [[ $# -gt 0 ]]; do
     case "$1" in 
-        -r|-run) mode="run"; shift ;; #shift removes this option from the list of arguments; next iteration will process the next one
+        -r|--run) mode="run"; shift ;; #shift removes this option from the list of arguments; next iteration will process the next one
         -a|--analysis) mode="analysis"; shift ;;
         -f|--file) 
             [[ $# -lt 2 ]] && { echo "ERROR: -file requires an argument"; usage;}
@@ -95,25 +95,6 @@ while [[ $# -gt 0 ]]; do
         *) echo "ERROR: Unknown option $1"; usage ;;
     esac
 done
-
-#validation of arguments 
-if [[ -z "$mode" ]]; then
-  echo "Error: you must specify either -run or -analysis"
-  usage
-fi
-
-if [[ -z "$file" ]]; then
-  echo "Error: -file is required"
-  usage
-fi
-
-if [[ -z "$samples" ]]; then
-  echo "Error: -samples is required"
-  usage
-fi
-
-
-
 
 
 ##############################################################################
@@ -127,7 +108,7 @@ check_fastq() {
     tmp=$(mktemp)
 
     if [[ "$f" == *.gz ]]; then
-        if ! gunzip -c "$f" 2>/dev/null | head -n "$FASTQ_LINES" > "$tmp"; then
+        if ! gunzip -c "$f" 2>/dev/null | head -n "$FASTQ_LINES" > "$tmp"; then  # reads only the first 40k lines of the decompressed FASTQ
             err "$type" "$f" "failed to read/decompress FASTQ"
             rm -f "$tmp"
             end_file; return $?
@@ -195,7 +176,6 @@ check_bam() {
 
 
     # ----- samtools check -----
-    
     if ! command -v samtools >/dev/null 2>&1; then
         fail "$type" "$f" "samtools not found; header/sortedness checks skipped"
         end_file
@@ -215,10 +195,18 @@ check_bam() {
 
     # Alignment check via @SQ presence
     if ! grep -q '^@SQ' "$hdr_tmp"; then
-        ok "$type" "$f" "no @SQ in header -> treating as UNALIGNED; skipping sortedness/refgen checks"
-        rm -f "$hdr_tmp"
-        end_file
-        return $?      
+        if [[ "$mode" == "run" ]]; then
+            ok "$type" "$f" "no @SQ in header -> treating as UNALIGNED; skipping sortedness/refgen checks"
+            rm -f "$hdr_tmp"
+            end_file
+            return $?
+        else 
+            err "$type" "$f" "This BAM appears to be UNALIGNED (missing @SQ); Please upload this file as a RUN"
+            rm -f "$hdr_tmp"    
+            end_file
+            return $? 
+        fi
+         
     fi
     
     # Aligned: continue with exisiting checks
@@ -384,35 +372,64 @@ check_vcf() {
 ##############################################################################
 # Main
 ##############################################################################
-if [[ $# -ne 1 ]]; then
-    echo "[ERROR] FILE - usage: $0 <file>"
-    exit 1
+
+# --validate required arguments --
+if [[ -z "$file" ]]; then
+  echo "Error: -file is required"
+  usage
 fi
 
-file="$1"
+if [[ -z "$mode" ]]; then
+  echo "Error: you must specify either -run(-r) or -analysis(-a)"
+  usage
+fi
 
+# check file exists
 if [[ ! -f "$file" ]]; then
     echo "[ERROR] FILE $file - not found"
     exit 1
 fi
 
+# if [[ -z "$samples" ]]; then
+#   echo "Error: -samples is required"
+#   usage
+# fi
+
+
+# -- determine file type and execute checks -- 
 case "$file" in
   *.fastq|*.fastq.gz|*.fq|*.fq.gz)
-    check_fastq "$file"
-    exit $?
+    if [[ "$mode" == "run" ]]; then
+        check_fastq "$file"
+        exit $?
+    fi
+    if [[ "$mode" == "analysis" ]]; then
+        err "FASTQ" "$file" "FASTQ files need to be uploaded as RUNs" 
+    fi
     ;;
   *.bam|*.bam.gz)
-    check_bam "$file"
-    exit $?
+    if [[ "$mode" == "run" ]]; then
+        check_unaligned_bam "$file"
+        exit $?
+    fi
+    if [[ "$mode" == "analysis" ]]; then
+        check_aligned_bam "$file"
+        exit $?
+    fi
     ;;
-  *.cram|*.cram.gz)
+  *.cram|*.cram.gz) # @@@ TODO: discuss if CRAM files also can be alsigned/unaligned and define checks to be performed
     check_cram "$file"
     exit $?
     ;;
   *.vcf|*.vcf.gz|*.bcf|*.bcf.gz|*.vcf.bz2|*.bcf.bz2)
-    # keep your current VCF calls for now
-    check_vcf "$file"
-    exit $?
+    
+    if [[ "$mode" == "run" ]]; then
+        err "VCF/BCF" "$file" "VCF/BCF files need to be uploaded as ANALYSIS"
+    fi
+    if [[ "$mode" == "analysis" ]]; then
+        check_vcf "$file"
+        exit $?
+    fi
     ;;
   *)
     echo "[WARNING] FILE $file - unsupported extension; skipping"
