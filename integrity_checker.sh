@@ -73,7 +73,7 @@ usage() {
     exit 1
 }
 
-FASTQ_LINES=40000      # FASTQ lines inspected
+#FASTQ_LINES=40000      # FASTQ lines inspected
 BAM_EOF_BYTES=32768    # bytes read from end of BAM for EOF validation
 VCF_RECORDS=10000      # VCF/BCF records parsed
 mode=""                # run or analysis
@@ -101,56 +101,79 @@ done
 # FASTQ
 ##############################################################################
 check_fastq() {
-    local f="$1" type="FASTQ"
+    local f="$1" type="FASTQ" lines=$(( FASTQ_LINES - (FASTQ_LINES % 4) ))
     begin_file "$type" "$f"
+
+    # check if file is empty
+    [[ -s "$f" ]] || {
+        err "$type" "$f" "File is empty. Please upload non-empty file"
+        end_file; return $?
+    }
 
     local tmp
     tmp=$(mktemp)
+    trap 'rm -f "$tmp"' RETURN
 
     if [[ "$f" == *.gz ]]; then
-        if ! gunzip -c "$f" 2>/dev/null | head -n "$FASTQ_LINES" > "$tmp"; then  # reads only the first 40k lines of the decompressed FASTQ
-            err "$type" "$f" "failed to read/decompress FASTQ"
-            rm -f "$tmp"
+        # verify gzip integrity (reads fill compressed stream, no output written)
+        if ! gzip -t "$f" 2>/dev/null; then
+            err "$type" "$f" "Compressed file is corrupted/incomplete. Re-create .gz file and upload again."
+            end_file; return $?
+        fi
+
+        # extract only first sample chhunk; pipefall is disabeled here to prevent 
+        # head exits early by design and can trigger SIGPIPE in gunzip, which would cause the entire pipeline to fail if pipefail were enabled. 
+        if ! (
+            set +o pipefail
+            gunzip -c "$f" 2>/dev/null | head -n "$lines" > "$tmp"
+        ); then  
+            err "$type" "$f" "Failed to read compressed file. Please check file integrity and re-upload."
             end_file; return $?
         fi
     else
-        if ! head -n "$FASTQ_LINES" "$f" > "$tmp" 2>/dev/null; then
-            err "$type" "$f" "failed to read FASTQ"
-            rm -f "$tmp"
+        # for uncompressed files, read only sample prefix
+        if ! head -n "$lines" "$f" > "$tmp" 2>/dev/null; then
+            err "$type" "$f" "Failed to read file. Please check file integrity and re-upload."
             end_file; return $?
         fi
     fi
 
+    # basic format check: first line should start with '@'
+    if ! head -n 1 "$tmp" | grep -q '^@'; then
+    err "$type" "$f" "Format error: record 1 does not start with '@'. Please upload valid FASTQ file."
+    end_file; return $?
+    fi
+
     # validator check
     if ! command -v fastQValidator >/dev/null 2>&1; then
-        rm -f "$tmp"
         fail "$type" "$f" "fastQValidator not found"
         end_file; return $?
     fi
 
     local vout rc errs
-    vout=$(fastQValidator --file "$tmp" --disableSeqIDCheck 2>&1)
+    vout=$(fastQValidator --file "$tmp" --disableSeqIDCheck 2>&1) #runs fastQValidator on extracted sample chunk
     rc=$?
 
     if (( rc == 0 )); then
         ok "$type" "$f" "validator passed"
-        rm -f "$tmp"
         end_file; return $?
+    fi
+
+    errs=$(
+        printf '%s\n' "$vout" \
+        | grep '^ERROR on Line ' \
+        | tr '\n' '; ' \
+        | sed 's/; $//'
+    )
+
+    if [[ -z "$errs" ]]; then 
+        errs="FASTQ format validation failed, but no detailed error message was returned. Please check if FASTQ format is valid"
     else
-        errs=$(
-            printf '%s\n' "$vout" \
-            | grep '^ERROR on Line ' \
-            | tr '\n' '; ' \
-            | sed 's/; $//'
-        )
+        errs="FASTQ format validation failed in the first ${lines} lines: $errs"
+    fi
 
-        if [[ -z "$errs" ]]; then
-            errs="fastQValidator failed with no detailed ERROR lines"
-        fi
-
-        err "$type" "$f" "$errs"
-        rm -f "$tmp"
-        end_file; return $?
+    err "$type" "$f" "$errs"
+    end_file; return $?
     fi
 }
 
