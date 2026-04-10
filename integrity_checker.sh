@@ -96,7 +96,6 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-
 ##############################################################################
 # FASTQ
 ##############################################################################
@@ -184,20 +183,9 @@ check_bam() {
     local f="$1" type="BAM"
     begin_file "$type" "$f"
 
-    local hdr_tmp tail_tmp sorted species
-
-    # EOF marker
-    tail_tmp=$(mktemp)
-    tail -c "$BAM_EOF_BYTES" "$f" > "$tail_tmp" 2>/dev/null || true
-
-    if xxd -p "$tail_tmp" | grep -iq '42430200'; then
-        ok "$type" "$f" "BAM EOF magic present"
-    else
-        err "$type" "$f" "BAM EOF magic (42430200) not found"
-    fi
-    rm -f "$tail_tmp"
-
-
+    local hdr_tmp sorted species align="False" mapped_primary
+    local eof_hex expected_eof="1f8b08040000000000ff0600424302001b0003000000000000000000"
+    
     # ----- samtools check -----
     if ! command -v samtools >/dev/null 2>&1; then
         fail "$type" "$f" "samtools not found; header/sortedness checks skipped"
@@ -205,68 +193,88 @@ check_bam() {
         return $?
     fi
 
-    # Checks if header is readable 
-    hdr_tmp=$(mktemp)
+    # initilize empty hdr_temp and trap for cleanup
+    hdr_tmp=$(mktemp) || {
+    fail "$type" "$f" "could not create temporary file"
+    end_file; return $?
+    }
+    trap 'rm -f "$hdr_tmp"' RETURN
 
+    #check if header is readable
     if ! samtools view -H "$f" > "$hdr_tmp" 2>/dev/null; then
         err "$type" "$f" "BAM header missing or unreadable"
-        rm -f "$hdr_tmp"
         end_file
         return $?      
     fi
     ok "$type" "$f" "header readable"
 
-    # Alignment check via @SQ presence
-    if ! grep -q '^@SQ' "$hdr_tmp"; then
-        if [[ "$mode" == "run" ]]; then
-            ok "$type" "$f" "no @SQ in header -> treating as UNALIGNED; skipping sortedness/refgen checks"
-            rm -f "$hdr_tmp"
-            end_file
-            return $?
-        else 
-            err "$type" "$f" "This BAM appears to be UNALIGNED (missing @SQ); Please upload this file as a RUN"
-            rm -f "$hdr_tmp"    
-            end_file
-            return $? 
-        fi
-         
-    fi
-    
-    # Aligned: continue with exisiting checks
-    ok "$type" "$f" "@SQ present -> treating as ALIGNED; continuing checks"
-    
-    # Sortedness by coordinate
-    sorted=$(grep -m1 '^@HD' "$hdr_tmp" | grep -oE "SO:[^[:space:]]*" | cut -d: -f2)
-    if [[ "$sorted" == "coordinate" ]] ; then
-        ok "$type" "$f" "BAM file sorted by coordinate"
+    # Check EOF marker
+    eof_hex=$(tail -c 28 "$f" 2>/dev/null | xxd -p -c 28)
+
+    if [[ "$eof_hex" == "$expected_eof" ]]; then
+        ok "$type" "$f" "BAM EOF marker present"
     else
-        err "$type" "$f" "BAM not sorted by coordinate (SO:${sorted:-missing})"
+        err "$type" "$f" "BAM EOF marker missing or file truncated. Please recreate the BAM file and resubmit."
     fi
 
-    rm -f "$hdr_tmp"
+    # Check if BAM is aligned or unaligned 
+    mapped_primary=$(samtools view -c -F 0x904 "$f" 2>/dev/null)
 
-    # Human reference genome check
-    if ! command -v refgenDetector >/dev/null 2>&1; then
-        fail "$type" "$f" "refgenDetector not found"
-        end_file; return $?
-    fi
-
-    species=$(refgenDetector -f "$f" -t BAM/CRAM 2>/dev/null \
-        | awk -F'Species detected:[[:space:]]*' '/Species detected:/ {print $2}' \
-        | xargs)
-
-    if [[ -z "$species" ]]; then
-        err "$type" "$f" "refgenDetector produced no species result"
-    elif [[ "$species" == "Homo sapiens" ]]; then
-        ok "$type" "$f" "species: Homo sapiens"
-    else
-        err "$type" "$f" "species is not human ($species)"
-    fi
-
+    #check if mapped_primary is empty (due to error)
+    if [[ -z "$mapped_primary" ]]; then
+    err "$type" "$f" "Could not inspect BAM alignment records. Please check the file and resubmit."
     end_file; return $?
+    fi
+
+    # alignment check
+    if (( mapped_primary > 0)); then
+        align="True"
+        if [[ "$mode" == "run" ]]; then
+            err "$type" "$f" "This BAM appears to be ALIGNED (contains primary mapped alignments); Please upload this file as an ANALYSIS, not a RUN"
+        else 
+            ok "$type" "$f" "BAM appears to be ALIGNED + uploaded as ANALYSIS"
+        fi
+    else
+        align="False"
+        if [[ "$mode" == "run" ]]; then
+            ok "$type" "$f" "BAM appears to be UNALIGNED (does not contain primary mapped alignments) + uploaded as RUN"
+        else 
+            err "$type" "$f" "This BAM appears to be UNALIGNED (does not contain primary mapped alignments); Please upload this file as a RUN, not an ANALYSIS"
+        fi
+    fi
+
+    # for aligned files 
+    if [[ "$align" == "True" ]]; then
+        # check sortedness by coordinate (reported in header)
+        sorted=$(grep -m1 '^@HD' "$hdr_tmp" | grep -oE "SO:[^[:space:]]*" | cut -d: -f2)
+        if [[ "$sorted" == "coordinate" ]] ; then
+            ok "$type" "$f" "BAM file sorted by coordinate"
+        else
+            err "$type" "$f" "BAM not sorted by coordinate (SO:${sorted:-missing})"
+        fi
+
+        # Check if refgenDetector is available
+        if ! command -v refgenDetector >/dev/null 2>&1; then
+            fail "$type" "$f" "refgenDetector not found"
+            end_file; return $?
+        fi
+
+        # Check if human 
+        species=$(refgenDetector -f "$f" -t BAM/CRAM 2>/dev/null \
+            | awk -F'Species detected:[[:space:]]*' '/Species detected:/ {print $2}' \
+            | xargs)
+
+        if [[ -z "$species" ]]; then
+            err "$type" "$f" "refgenDetector produced no species result"
+        elif [[ "$species" == "Homo sapiens" ]]; then
+            ok "$type" "$f" "species: Homo sapiens"
+        else
+            err "$type" "$f" "species is not human ($species)"
+        fi
+    fi
+        end_file; return $?
 
 }
-
 
 ##############################################################################
 # CRAM
@@ -417,7 +425,6 @@ fi
 #   echo "Error: -samples is required"
 #   usage
 # fi
-
 
 # -- determine file type and execute checks -- 
 case "$file" in
