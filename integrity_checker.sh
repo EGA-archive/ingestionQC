@@ -291,20 +291,29 @@ check_cram() {
         end_file; return $?
     fi
 
-    # Read header once 
-    hdr_tmp=$(mktemp)
-    if ! samtools view -H "$f" > "$hdr_tmp" 2>/dev/null; then
-        err "$type" "$f" "CRAM header missing or unreadable"
-        rm -f "$hdr_tmp"
-        end_file; return $?
+    # CRAM policy: ANALYSIS only
+    if [[ "$mode" == "run" ]]; then
+        err "$type" "$f" "CRAM files must be uploaded as ANALYSIS, not RUN."
     fi
 
-    # Require @SQ (reference dictionary)
+    hdr_tmp=$(mktemp) || {
+        fail "$type" "$f" "could not create temporary file"
+        end_file; return $?
+    }
+    trap 'rm -f "$hdr_tmp"' RETURN
+
+    # header readable
+    if ! samtools view -H "$f" > "$hdr_tmp" 2>/dev/null; then
+        err "$type" "$f" "CRAM header is missing or unreadable. Please upload a valid CRAM file."
+        end_file; return $?
+    fi
+    ok "$type" "$f" "header readable"
+
+    # require @SQ
     if grep -q '^@SQ' "$hdr_tmp"; then
-        ok "$type" "$f" "header readable; @SQ present"
+        ok "$type" "$f" "@SQ reference sequence entries present"
     else
-        err  "$type" "$f" "header missing @SQ"
-        rm -f "$hdr_tmp"
+        err "$type" "$f" "CRAM header is missing @SQ reference sequence entries. Please upload a valid CRAM file."
         end_file; return $?
     fi
 
@@ -317,14 +326,13 @@ check_cram() {
         err "$type" "$f" "CRAM not sorted by coordinate (SO:${sorted:-missing})"
     fi
 
-    # Reference MD5 tags (now REQUIRED)
-    if grep -q 'M5:' "$hdr_tmp"; then
+    # require M5 on every @SQ line
+    if awk 'BEGIN{ok=1} /^@SQ/ && $0 !~ /(^|[[:space:]])M5:/ {ok=0} END{exit ok?0:1}' "$hdr_tmp"; then
         ok "$type" "$f" "M5 reference MD5 tags present"
     else
-        err "$type" "$f" "missing required M5 reference MD5 tags"
+        err "$type" "$f" "CRAM header is missing required reference MD5 (M5) tags. Please recreate the CRAM with the correct reference."
     fi
 
-    rm -f "$hdr_tmp"
 
     # Human reference genome check
     if ! command -v refgenDetector >/dev/null 2>&1; then
