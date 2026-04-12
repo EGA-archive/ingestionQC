@@ -358,10 +358,10 @@ check_cram() {
 }
 
 ##############################################################################
-# VCF / BCF
+# VCF
 ##############################################################################
 check_vcf() {
-    local f="$1" type="VCF/BCF"
+    local f="$1" type="VCF"
     begin_file "$type" "$f"
 
     # ----- tool check -----
@@ -459,10 +459,10 @@ case "$file" in
     check_cram "$file"
     exit $?
     ;;
-  *.vcf|*.vcf.gz|*.bcf|*.bcf.gz|*.vcf.bz2|*.bcf.bz2)
+  *.vcf|*.vcf.gz|*.vcf.bz2)
     
     if [[ "$mode" == "run" ]]; then
-        err "VCF/BCF" "$file" "VCF/BCF files need to be uploaded as ANALYSIS"
+        err "VCF" "$file" "VCF/BCF files need to be uploaded as ANALYSIS"
     fi
     if [[ "$mode" == "analysis" ]]; then
         check_vcf "$file"
