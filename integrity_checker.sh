@@ -8,12 +8,17 @@
 #
 # Checks implemented
 #   • FASTQ : extract the first 40 000 lines and run fastQValidator
-#   • BAM   : inspect the first 500 header lines and verify the BAM EOF marker
-#   • CRAM  : inspect the first 500 header lines and REQUIRE reference
-#             MD5 (M5) tags (missing M5 ⇒ ERROR)
-#   • VCF   : parse the header plus the first 10 000 variant records with
-#             bcftools head (fatal parse ⇒ ERROR)
-#           : verify that VCF/BCF files are sorted according to HTSlib rules
+#   • BAM   : check that the header is readable 
+#           : check that the file ends with a valid BAM EOF marker (28 bytes with specific byte values)
+#           : check if aligned (contains primary mapped alignments) vs unaligned
+#           : check sortedness by coordinate (reported in header)
+#           : check is file is human with refgenDetector 
+#   • CRAM  : inspect file structure with samtools quickcheck
+#           : check that the header is readable and contains @SQ lines  
+#           : MD5 (M5) tags
+#           : check if file is human with refgenDetector
+#   • VCF   : verify that all samples in the VCF are present in the provided metadata CSV file           
+#           : run VCFX_validator and capture errors
 #
 # Exit status
 #   • Captures all ERRORS and returns them.
@@ -28,6 +33,7 @@ declare -a _OKS _FAILS _ERRS
 _cur_type=""
 _cur_file=""
 
+#function to initialize state for a new file; resets the _OKS, _FAILS, and _ERRS arrays to empty and sets the current file type and path for error reporting
 begin_file() {
     _cur_type="$1"
     _cur_file="$2"
@@ -40,7 +46,8 @@ ok()   { _OKS+=("$3"); }
 fail() { _FAILS+=("$3"); }
 err()  { _ERRS+=("$3"); }
 
-
+# function to print the final status message for the current file based on the contents of the _OKS, _FAILS, and _ERRS arrays. 
+# If there are any errors, it prints an [ERROR] message with all errors concatenated. If there are no errors but there are failures, it prints a [FAIL] message with all failures concatenated. If there are no errors or failures, it prints an [OK] message.
 end_file() {
   local msg
 
@@ -62,23 +69,42 @@ end_file() {
   return 0
 }
 
+# help message function; prints usage instructions and exits with status 1
 usage() {
-    echo "Usage: $0 [OPTIONS] -f <file> -s <samples>"
+    echo "Usage: $0 [OPTIONS] -f <file> [-s <samples>]"
     echo "Options:"
     echo "  -r, --run           Run mode (default)"
     echo "  -a, --analysis      Analysis mode (skips some checks)"
     echo "  -f, --file FILE     Input file to check"
-    echo "  -s, --samples SAMPLES   Sample identifiers (comma-separated)"
+    echo "  -s, --samples FILE    Metadata CSV file used for VCF sample-name checks"
     echo "  -h, --help          Show this help message and exit"
     exit 1
 }
 
-#FASTQ_LINES=40000      # FASTQ lines inspected
-BAM_EOF_BYTES=32768    # bytes read from end of BAM for EOF validation
-VCF_RECORDS=10000      # VCF/BCF records parsed
+# helper function to control the mode errors
+reject_file() {
+    local type="$1" f="$2" msg="$3"
+    begin_file "$type" "$f"
+    err "$type" "$f" "$msg"
+    end_file
+    return $?
+}
+
+# helper function to control fails (e.g., missing helper tool)
+internal_fail_file() {
+    local type="$1" f="$2" msg="$3"
+    begin_file "$type" "$f"
+    fail "$type" "$f" "$msg"
+    end_file
+    return $?
+}
+
+FASTQ_LINES=40000      # FASTQ lines inspected
+#BAM_EOF_BYTES=32768    # bytes read from end of BAM for EOF validation
+#VCF_RECORDS=10000      # VCF/BCF records parsed
 mode=""                # run or analysis
 file=""                # input file path
-samples=""             # sample identifiers (comma-separated)
+samples=""             # metadata CSV file for VCF sample-name checks
 
 #get options and arguments 
 while [[ $# -gt 0 ]]; do
@@ -110,7 +136,10 @@ check_fastq() {
     }
 
     local tmp
-    tmp=$(mktemp)
+    tmp=$(mktemp) || {
+    fail "$type" "$f" "could not create temporary file"
+    end_file; return $?
+    }
     trap 'rm -f "$tmp"' RETURN
 
     if [[ "$f" == *.gz ]]; then
@@ -173,7 +202,6 @@ check_fastq() {
 
     err "$type" "$f" "$errs"
     end_file; return $?
-    fi
 }
 
 ##############################################################################
@@ -283,17 +311,12 @@ check_cram() {
     local f="$1" type="CRAM"
     begin_file "$type" "$f"
 
-    local hdr_tmp sorted species
+    local hdr_tmp sorted species qc_out qc_rc
 
     #samtools check 
     if ! command -v samtools >/dev/null 2>&1; then
         fail "$type" "$f" "samtools not found; CRAM check skipped"
         end_file; return $?
-    fi
-
-    # CRAM policy: ANALYSIS only
-    if [[ "$mode" == "run" ]]; then
-        err "$type" "$f" "CRAM files must be uploaded as ANALYSIS, not RUN."
     fi
 
     hdr_tmp=$(mktemp) || {
@@ -308,6 +331,14 @@ check_cram() {
         end_file; return $?
     fi
     ok "$type" "$f" "header readable"
+
+    qc_out=$(samtools quickcheck -vvv "$f" 2>&1)
+    qc_rc=$?
+
+    if (( qc_rc != 0 )); then
+    err "$type" "$f" "CRAM file failed samtools quickcheck: $(printf '%s' "$qc_out" | tr '\n' '; ' | sed 's/; $//')"
+    end_file; return $?
+    fi
 
     # require @SQ
     if grep -q '^@SQ' "$hdr_tmp"; then
@@ -332,7 +363,6 @@ check_cram() {
     else
         err "$type" "$f" "CRAM header is missing required reference MD5 (M5) tags. Please recreate the CRAM with the correct reference."
     fi
-
 
     # Human reference genome check
     if ! command -v refgenDetector >/dev/null 2>&1; then
@@ -364,32 +394,104 @@ check_vcf() {
     local f="$1" type="VCF"
     begin_file "$type" "$f"
 
-    # ----- tool check -----
+    local vout rc errs missing
+    local csv_tmp vcf_tmp
+
+    # ----- VCFX_validator check -----
     if ! command -v VCFX_validator >/dev/null 2>&1; then
         fail "$type" "$f" "VCFX_validator not found"
         end_file; return $?
     fi
 
-    local vout rc errs
-
-    if [[ "$f" == *.gz ]]; then
-        vout=$(zcat "$f" | VCFX_validator 2>&1)
-        rc=$?
-    elif [[ "$f" == *.bz2 ]]; then
-        vout=$(bzcat "$f" | VCFX_validator 2>&1)
-        rc=$?
-    else
-        vout=$(VCFX_validator -i "$f" 2>&1)
-        rc=$?
-    fi
-
-    # PASS condition: explicit status line
-    if printf '%s\n' "$vout" | grep -q '^Status:[[:space:]]*PASSED'; then
-        ok "$type" "$f" "validator passed"
+    # ----- bcftools check -----
+    if ! command -v bcftools >/dev/null 2>&1; then
+        fail "$type" "$f" "bcftools not found; sample name checks cannot be performed"
         end_file; return $?
     fi
 
-    # Collect all error lines (join with '; ' like FASTQ)
+    # ----- Check that all samples in the VCF are present in the metadata -----
+    csv_tmp=$(mktemp) || {
+        fail "$type" "$f" "Failed to create temporary file for CSV processing"
+        end_file; return $?
+    }
+    trap 'rm -f "$csv_tmp" "$vcf_tmp"' RETURN
+
+    vcf_tmp=$(mktemp) || {
+        fail "$type" "$f" "Failed to create temporary file for VCF processing"
+        end_file; return $?
+    }
+
+    # ----- input format / compression sanity check -----
+    case "$f" in
+        *.vcf.gz)
+            if ! gzip -t "$f" 2>/dev/null; then
+                err "$type" "$f" "Compressed VCF file could not be decompressed. Please check the file and resubmit."
+                end_file; return $?
+            fi
+            ;;
+        *.vcf.bz2)
+            if ! bzip2 -t "$f" 2>/dev/null; then
+                err "$type" "$f" "Compressed VCF file could not be decompressed. Please check the file and resubmit."
+                end_file; return $?
+            fi
+            ;;
+        *.vcf)
+            ;;
+    esac
+
+    # Extract non-empty entries from first 3 CSV columns, skipping header
+    awk -F',' 'NR > 1 {
+        for (i = 1; i <= 3; i++) {
+            gsub(/^[ \t]+|[ \t\r]+$/, "", $i)
+            if ($i != "") print $i
+        }
+    }' "$samples" | sort -u > "$csv_tmp" || {
+        fail "$type" "$f" "Could not read sample metadata file"
+        end_file; return $?
+    }
+
+    # ----- extract sample names from VCF -----
+    case "$f" in
+        *.vcf.gz|*.vcf)
+            if ! bcftools query -l "$f" > "$vcf_tmp" 2>/dev/null; then
+                err "$type" "$f" "Could not read sample names from the VCF file. Please check the file and resubmit."
+                end_file; return $?
+            fi
+            ;;
+        *.vcf.bz2)
+            if ! bzcat "$f" 2>/dev/null | bcftools query -l - > "$vcf_tmp" 2>/dev/null; then
+                err "$type" "$f" "Could not read sample names from the VCF file. Please check the file and resubmit."
+                end_file; return $?
+            fi
+            ;;
+    esac
+
+    missing=$(grep -Fxv -f "$csv_tmp" "$vcf_tmp" || true)
+    if [[ -n "$missing" ]]; then
+        err "$type" "$f" "Samples present in VCF but missing from registered metadata: $(printf '%s' "$missing" | tr '\n' ',' | sed 's/,$//')"
+    fi
+
+    # ----- Run VCFX_validator -----
+    case "$f" in
+        *.vcf.gz)
+            vout=$(zcat "$f" 2>/dev/null | VCFX_validator 2>&1)
+            rc=$?
+            ;;
+        *.vcf.bz2)
+            vout=$(bzcat "$f" 2>/dev/null | VCFX_validator 2>&1)
+            rc=$?
+            ;;
+        *.vcf)
+            vout=$(VCFX_validator -i "$f" 2>&1)
+            rc=$?
+            ;;
+    esac
+
+    if printf '%s\n' "$vout" | grep -q '^Status:[[:space:]]*PASSED'; then
+        ok "$type" "$f" "VCF file passed validation checks"
+        end_file; return $?
+    fi
+
     errs=$(
         printf '%s\n' "$vout" \
         | grep -E '^Error:' \
@@ -398,9 +500,9 @@ check_vcf() {
     )
 
     if [[ -z "$errs" ]]; then
-        # fallback: if validator failed but didn't print "Error:" lines
-        errs=$(printf '%s\n' "$vout" | head -n 1)
-        [[ -z "$errs" ]] && errs="VCFX_validator failed (rc=$rc) with no output"
+        errs="VCF validation failed, but VCFX_validator did not return a detailed error message. Please check the file and consult the VCFX_validator documentation."
+    else
+        errs="VCF validation failed: $errs"
     fi
 
     err "$type" "$f" "$errs"
@@ -429,45 +531,45 @@ if [[ ! -f "$file" ]]; then
     exit 1
 fi
 
-# if [[ -z "$samples" ]]; then
-#   echo "Error: -samples is required"
-#   usage
-# fi
-
 # -- determine file type and execute checks -- 
 case "$file" in
   *.fastq|*.fastq.gz|*.fq|*.fq.gz)
     if [[ "$mode" == "run" ]]; then
         check_fastq "$file"
         exit $?
-    fi
-    if [[ "$mode" == "analysis" ]]; then
-        err "FASTQ" "$file" "FASTQ files need to be uploaded as RUNs" 
+    else
+        reject_file "FASTQ" "$file" "FASTQ files need to be uploaded as RUNs"
+        exit $?
     fi
     ;;
+
   *.bam|*.bam.gz)
-    if [[ "$mode" == "run" ]]; then
-        check_unaligned_bam "$file"
-        exit $?
-    fi
-    if [[ "$mode" == "analysis" ]]; then
-        check_aligned_bam "$file"
-        exit $?
-    fi
-    ;;
-  *.cram|*.cram.gz) # @@@ TODO: discuss if CRAM files also can be alsigned/unaligned and define checks to be performed
-    check_cram "$file"
+    check_bam "$file"
     exit $?
     ;;
-  *.vcf|*.vcf.gz|*.vcf.bz2)
-    
-    if [[ "$mode" == "run" ]]; then
-        err "VCF" "$file" "VCF/BCF files need to be uploaded as ANALYSIS"
-    fi
+  *.cram|*.cram.gz) 
     if [[ "$mode" == "analysis" ]]; then
-        check_vcf "$file"
+        check_cram "$file"
+        exit $?
+    else 
+        reject_file "CRAM" "$file" "CRAM files need to be uploaded as ANALYSIS"
         exit $?
     fi
+    ;;
+    
+  *.vcf|*.vcf.gz|*.vcf.bz2)
+    if [[ "$mode" == "run" ]]; then
+        reject_file "VCF" "$file" "VCF/BCF files need to be uploaded as ANALYSIS"
+        exit $?
+    fi
+    
+    if [[ -z "$samples" ]]; then #@@@ SHOULD BE A FAIL or ERROR ? 
+        internal_fail_file "VCF" "$file" "Sample metadata CSV (-s) was not provided to the QC script"
+        exit $?
+    fi
+
+    check_vcf "$file"
+    exit $?
     ;;
   *)
     echo "[WARNING] FILE $file - unsupported extension; skipping"
