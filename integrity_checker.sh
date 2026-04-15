@@ -195,9 +195,9 @@ check_fastq() {
     )
 
     if [[ -z "$errs" ]]; then 
-        errs="FASTQ format validation failed, but no detailed error message was returned. Please check if FASTQ format is valid"
+        errs="fastQvalidator failed, but no detailed error message was returned. Please check if FASTQ format is valid"
     else
-        errs="FASTQ format validation failed in the first ${lines} lines: $errs"
+        errs="fastQvalidator failed in the first ${lines} lines: $errs"
     fi
 
     err "$type" "$f" "$errs"
@@ -282,13 +282,13 @@ check_bam() {
         fi
 
         # Check if refgenDetector is available
-        if ! command -v refgenDetector >/dev/null 2>&1; then
+        if ! command -v refgenDetector_main.py >/dev/null 2>&1; then
             fail "$type" "$f" "refgenDetector not found"
             end_file; return $?
         fi
 
         # Check if human 
-        species=$(refgenDetector -f "$f" -t BAM/CRAM 2>/dev/null \
+        species=$(refgenDetector_main.py -f "$f" -t BAM/CRAM 2>/dev/null \
             | awk -F'Species detected:[[:space:]]*' '/Species detected:/ {print $2}' \
             | xargs)
 
@@ -297,7 +297,7 @@ check_bam() {
         elif [[ "$species" == "Homo sapiens" ]]; then
             ok "$type" "$f" "species: Homo sapiens"
         else
-            err "$type" "$f" "species is not human ($species)"
+            err "$type" "$f" "refgenDetector: species is not human ($species)"
         fi
     fi
         end_file; return $?
@@ -365,13 +365,13 @@ check_cram() {
     fi
 
     # Human reference genome check
-    if ! command -v refgenDetector >/dev/null 2>&1; then
+    if ! command -v refgenDetector_main.py >/dev/null 2>&1; then
         fail "$type" "$f" "refgenDetector not found"
         end_file; return $?
     fi
 
     species=$(
-        refgenDetector -f "$f" -t BAM/CRAM 2>/dev/null \
+        refgenDetector_main.py -f "$f" -t BAM/CRAM 2>/dev/null \
         | awk -F'Species detected:[[:space:]]*' '/Species detected:/ {print $2}' \
         | xargs
     )
@@ -381,7 +381,7 @@ check_cram() {
     elif [[ "$species" == "Homo sapiens" ]]; then
         ok "$type" "$f" "species: Homo sapiens"
     else
-        err "$type" "$f" "species is not human ($species)"
+        err "$type" "$f" "refgenDetector: species is not human ($species)"
     fi
 
     end_file; return $?
