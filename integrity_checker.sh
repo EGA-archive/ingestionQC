@@ -100,6 +100,8 @@ internal_fail_file() {
 }
 
 FASTQ_LINES=40000      # FASTQ lines inspected
+# Timing log (can be overridden with INGESTIONQC_TIMING_LOG env var)
+TIMING_LOG="${INGESTIONQC_TIMING_LOG:-./ingestionQC_timing.csv}"
 #BAM_EOF_BYTES=32768    # bytes read from end of BAM for EOF validation
 #VCF_RECORDS=10000      # VCF/BCF records parsed
 mode=""                # run or analysis
@@ -222,21 +224,44 @@ check_bam() {
     declare -a _bam_checks _bam_times
     record_check() { _bam_checks+=("$1"); _bam_times+=("$2"); }
 
-    # Print a CSV-like timing line on function exit. Format:
-    # TIMING,<file>,<check1_secs>,<check2_secs>,...,<total_secs>
+    # Print a CSV-like timing line on function exit. Writes to $TIMING_LOG.
+    # Header columns are written once (file may be created by multiple runs).
+    # Fixed header order so columns can be associated with checks reliably.
     print_bam_timing() {
-        # sum durations
-        total=0.000
-        for t in "${_bam_times[@]}"; do
-            total=$(awk -v a="$total" -v b="$t" 'BEGIN{printf "%.3f", a + b}')
+        # fixed header order
+        TIMING_HEADERS=(header_read eof_check count_mapped_primary sortedness_check refgenDetector_check refgenDetector_run)
+
+        # ensure header exists in the log file
+        if [[ ! -s "$TIMING_LOG" ]]; then
+            printf 'file' >> "$TIMING_LOG"
+            for h in "${TIMING_HEADERS[@]}"; do
+                printf ',%s' "$h" >> "$TIMING_LOG"
+            done
+            printf ',total_seconds\n' >> "$TIMING_LOG"
+        fi
+
+        # build a mapping from check name -> value for recorded checks
+        declare -A map
+        for i in "${!_bam_checks[@]}"; do
+            map["${_bam_checks[i]}"]="${_bam_times[i]}"
         done
 
-        # produce CSV line: TIMING,<file>,<dur1>,<dur2>,...,<total>
-        printf 'TIMING,%s' "$f"
-        for d in "${_bam_times[@]}"; do
-            printf ',%s' "$d"
+        # sum durations of recorded numeric times (ignore NA)
+        total=0.000
+        for val in "${_bam_times[@]}"; do
+            # skip empty/NA
+            if [[ -n "$val" && "$val" != "NA" ]]; then
+                total=$(awk -v a="$total" -v b="$val" 'BEGIN{printf "%.3f", a + b}')
+            fi
         done
-        printf ',%s\n' "$total"
+
+        # write CSV line with values ordered according to TIMING_HEADERS
+        printf '%s' "$f" >> "$TIMING_LOG"
+        for h in "${TIMING_HEADERS[@]}"; do
+            v="${map[$h]:-NA}"
+            printf ',%s' "$v" >> "$TIMING_LOG"
+        done
+        printf ',%s\n' "$total" >> "$TIMING_LOG"
     }
     
     # ----- samtools check -----
