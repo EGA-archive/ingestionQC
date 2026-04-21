@@ -213,84 +213,44 @@ check_bam() {
 
     local hdr_tmp sorted species align="False" mapped_primary
     local eof_hex expected_eof="1f8b08040000000000ff0600424302001b0003000000000000000000"
-    # helper to produce an ISO-8601 UTC timestamp for each check
-    timestamp() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
-
-    # -- timing helpers (record per-check durations in seconds, ms precision)
-    now() { date -u +%s.%N; }                       # returns epoch seconds.nanoseconds
-    elapsed() { awk -v s="$1" -v e="$2" 'BEGIN{printf "%.3f", e - s}'; }
-    declare -a _bam_checks _bam_times
-    record_check() { _bam_checks+=("$1"); _bam_times+=("$2"); }
-
-    # Print a CSV-like timing line on function exit. Format:
-    # TIMING,<file>,<check1_secs>,<check2_secs>,...,<total_secs>
-    print_bam_timing() {
-        # sum durations
-        total=0.000
-        for t in "${_bam_times[@]}"; do
-            total=$(awk -v a="$total" -v b="$t" 'BEGIN{printf "%.3f", a + b}')
-        done
-
-        # produce CSV line: TIMING,<file>,<dur1>,<dur2>,...,<total>
-        printf 'TIMING,%s' "$f"
-        for d in "${_bam_times[@]}"; do
-            printf ',%s' "$d"
-        done
-        printf ',%s\n' "$total"
-    }
     
     # ----- samtools check -----
     if ! command -v samtools >/dev/null 2>&1; then
-        fail "$type" "$f" "[$(timestamp)] samtools not found; header/sortedness checks skipped"
+        fail "$type" "$f" "samtools not found; header/sortedness checks skipped"
         end_file
         return $?
     fi
 
-    # initilize empty hdr_temp and trap for cleanup; ensure timings are printed on any exit
+    # initilize empty hdr_temp and trap for cleanup
     hdr_tmp=$(mktemp) || {
-    fail "$type" "$f" "[$(timestamp)] could not create temporary file"
+    fail "$type" "$f" "could not create temporary file"
     end_file; return $?
     }
-    trap 'rm -f "$hdr_tmp"; print_bam_timing' RETURN
+    trap 'rm -f "$hdr_tmp"' RETURN
 
     #check if header is readable
-    start=$(now)
     if ! samtools view -H "$f" > "$hdr_tmp" 2>/dev/null; then
-        endt=$(now)
-        dur=$(elapsed "$start" "$endt")
-        record_check "header_read" "$dur"
-        err "$type" "$f" "[$(timestamp)] BAM header missing or unreadable"
+        err "$type" "$f" "BAM header missing or unreadable"
         end_file
         return $?      
     fi
-    endt=$(now)
-    dur=$(elapsed "$start" "$endt")
-    record_check "header_read" "$dur"
-    ok "$type" "$f" "[$(timestamp)] header readable"
+    ok "$type" "$f" "header readable"
 
     # Check EOF marker
-    start=$(now)
     eof_hex=$(tail -c 28 "$f" 2>/dev/null | xxd -p -c 28)
-    endt=$(now)
-    dur=$(elapsed "$start" "$endt")
-    record_check "eof_check" "$dur"
 
     if [[ "$eof_hex" == "$expected_eof" ]]; then
-        ok "$type" "$f" "[$(timestamp)] BAM EOF marker present"
+        ok "$type" "$f" "BAM EOF marker present"
     else
-        err "$type" "$f" "[$(timestamp)] BAM EOF marker missing or file truncated. Please recreate the BAM file and resubmit."
+        err "$type" "$f" "BAM EOF marker missing or file truncated. Please recreate the BAM file and resubmit."
     fi
 
     # Check if BAM is aligned or unaligned 
-    start=$(now)
     mapped_primary=$(samtools view -c -F 0x904 "$f" 2>/dev/null)
-    endt=$(now)
-    dur=$(elapsed "$start" "$endt")
-    record_check "count_mapped_primary" "$dur"
 
     #check if mapped_primary is empty (due to error)
     if [[ -z "$mapped_primary" ]]; then
-    err "$type" "$f" "[$(timestamp)] Could not inspect BAM alignment records. Please check the file and resubmit."
+    err "$type" "$f" "Could not inspect BAM alignment records. Please check the file and resubmit."
     end_file; return $?
     fi
 
@@ -298,16 +258,16 @@ check_bam() {
     if (( mapped_primary > 0)); then
         align="True"
         if [[ "$mode" == "run" ]]; then
-            err "$type" "$f" "[$(timestamp)] This BAM appears to be ALIGNED (contains primary mapped alignments); Please upload this file as an ANALYSIS, not a RUN"
+            err "$type" "$f" "This BAM appears to be ALIGNED (contains primary mapped alignments); Please upload this file as an ANALYSIS, not a RUN"
         else 
-            ok "$type" "$f" "[$(timestamp)] BAM appears to be ALIGNED + uploaded as ANALYSIS"
+            ok "$type" "$f" "BAM appears to be ALIGNED + uploaded as ANALYSIS"
         fi
     else
         align="False"
         if [[ "$mode" == "run" ]]; then
-            ok "$type" "$f" "[$(timestamp)] BAM appears to be UNALIGNED (does not contain primary mapped alignments) + uploaded as RUN"
+            ok "$type" "$f" "BAM appears to be UNALIGNED (does not contain primary mapped alignments) + uploaded as RUN"
         else 
-            err "$type" "$f" "[$(timestamp)] This BAM appears to be UNALIGNED (does not contain primary mapped alignments); Please upload this file as a RUN, not an ANALYSIS"
+            err "$type" "$f" "This BAM appears to be UNALIGNED (does not contain primary mapped alignments); Please upload this file as a RUN, not an ANALYSIS"
         fi
     fi
 
@@ -315,46 +275,29 @@ check_bam() {
     if [[ "$align" == "True" ]]; then
         # check sortedness by coordinate (reported in header)
         sorted=$(grep -m1 '^@HD' "$hdr_tmp" | grep -oE "SO:[^[:space:]]*" | cut -d: -f2)
-        start=$(now)
-        sorted=$(grep -m1 '^@HD' "$hdr_tmp" | grep -oE "SO:[^[:space:]]*" | cut -d: -f2)
-        endt=$(now)
-        dur=$(elapsed "$start" "$endt")
-        record_check "sortedness_check" "$dur"
-
         if [[ "$sorted" == "coordinate" ]] ; then
-            ok "$type" "$f" "[$(timestamp)] BAM file sorted by coordinate"
+            ok "$type" "$f" "BAM file sorted by coordinate"
         else
-            err "$type" "$f" "[$(timestamp)] BAM not sorted by coordinate (SO:${sorted:-missing})"
+            err "$type" "$f" "BAM not sorted by coordinate (SO:${sorted:-missing})"
         fi
 
         # Check if refgenDetector is available
-        start=$(now)
         if ! command -v refgenDetector_main.py >/dev/null 2>&1; then
-            endt=$(now)
-            dur=$(elapsed "$start" "$endt")
-            record_check "refgenDetector_check" "$dur"
-            fail "$type" "$f" "[$(timestamp)] refgenDetector not found"
+            fail "$type" "$f" "refgenDetector not found"
             end_file; return $?
         fi
-        endt=$(now)
-        dur=$(elapsed "$start" "$endt")
-        record_check "refgenDetector_check" "$dur"
 
         # Check if human 
-        start=$(now)
         species=$(refgenDetector_main.py -f "$f" -t BAM/CRAM 2>/dev/null \
             | awk -F'Species detected:[[:space:]]*' '/Species detected:/ {print $2}' \
             | xargs)
-        endt=$(now)
-        dur=$(elapsed "$start" "$endt")
-        record_check "refgenDetector_run" "$dur"
 
         if [[ -z "$species" ]]; then
-            err "$type" "$f" "[$(timestamp)] refgenDetector produced no species result"
+            err "$type" "$f" "refgenDetector produced no species result"
         elif [[ "$species" == "Homo sapiens" ]]; then
-            ok "$type" "$f" "[$(timestamp)] species: Homo sapiens"
+            ok "$type" "$f" "species: Homo sapiens"
         else
-            err "$type" "$f" "[$(timestamp)] refgenDetector: species is not human ($species)"
+            err "$type" "$f" "refgenDetector: species is not human ($species)"
         fi
     fi
         end_file; return $?
@@ -620,7 +563,7 @@ case "$file" in
         exit $?
     fi
     
-    if [[ -z "$samples" ]]; then #@@@ SHOULD BE A FAIL or ERROR ? 
+    if [[ -z "$samples" ]]; then
         internal_fail_file "VCF" "$file" "Sample metadata CSV (-s) was not provided to the QC script"
         exit $?
     fi
