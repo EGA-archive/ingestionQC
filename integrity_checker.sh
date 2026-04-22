@@ -308,7 +308,7 @@ check_bam() {
 
     # Check if BAM is aligned or unaligned 
     start=$(now)
-    mapped_primary=$(samtools view -c -F 0x904 "$f" 2>/dev/null)
+    mapped_primary=$(samtools view -h "$f" | head -n 50000 |samtools view -c -F 0x904 - 2>/dev/null)
     endt=$(now)
     dur=$(elapsed "$start" "$endt")
     record_check "count_mapped_primary" "$dur"
