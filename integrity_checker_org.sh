@@ -246,7 +246,7 @@ check_bam() {
     fi
 
     # Check if BAM is aligned or unaligned 
-    mapped_primary=$(samtools view -c -F 0x904 "$f" 2>/dev/null)
+    mapped_primary=$(samtools view -h "$f" | head -n 100000 |samtools view -c -F 0x904 - 2>/dev/null)
 
     #check if mapped_primary is empty (due to error)
     if [[ -z "$mapped_primary" ]]; then
@@ -502,7 +502,7 @@ check_vcf() {
     if [[ -z "$errs" ]]; then
         errs="VCF validation failed, but VCFX_validator did not return a detailed error message. Please check the file and consult the VCFX_validator documentation."
     else
-        errs="VCF validation failed: $errs"
+        errs="VCFX_validator failed: $errs"
     fi
 
     err "$type" "$f" "$errs"
@@ -527,7 +527,7 @@ fi
 
 # check file exists
 if [[ ! -f "$file" ]]; then
-    echo "[ERROR] FILE $file - not found"
+    fail "[FAIL] FILE $file - not found"
     exit 1
 fi
 
