@@ -188,7 +188,7 @@ check_fastq_stdin() {
                     }
                 }
             ' \
-            | fastQValidator --file - --disableSeqIDCheck 2>&1
+            | fastQValidator --file - --disableSeqIDCheck 2>&1 \
             | strip_ansi
     )
     rc=$?
