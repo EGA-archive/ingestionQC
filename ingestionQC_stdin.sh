@@ -200,13 +200,6 @@ fastq_basic_checks() {
                 exit 0
             }
 
-            print "OK\tFASTQ line count: " line_count "."
-
-            if (line_count % 4 != 0) {
-                print "ERROR\tFASTQ line count is not divisible by 4. The file may be truncated or malformed."
-            } else {
-                print "OK\tFASTQ line count is divisible by 4."
-            }
         }
     '
 }
@@ -323,3 +316,41 @@ case "$extension" in
     exit 0
     ;;
 esac
+
+
+
+
+
+
+
+
+
+
+# fastq_basic_checks() {
+#     awk '
+#         NR == 1 {
+#             if ($0 !~ /^@/) {
+#                 print "ERROR\tFormat error: record 1 does not start with @."
+#             }
+#         }
+
+#         {
+#             line_count++
+#         }
+
+#         END {
+#             if (line_count == 0) {
+#                 print "ERROR\tFile is empty. Please upload a non-empty FASTQ file."
+#                 exit 0
+#             }
+
+#             print "OK\tFASTQ line count: " line_count "."
+
+#             if (line_count % 4 != 0) {
+#                 print "ERROR\tFASTQ line count is not divisible by 4. The file may be truncated or malformed."
+#             } else {
+#                 print "OK\tFASTQ line count is divisible by 4."
+#             }
+#         }
+#     '
+# }
