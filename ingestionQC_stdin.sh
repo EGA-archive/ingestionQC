@@ -129,39 +129,6 @@ if [[ -z "$extension" ]]; then
     usage
 fi
 
-##############################################################################
-# Shared status parsing
-##############################################################################
-
-print_status() {
-    local level="$1"
-    local message="$2"
-
-    printf '%s\t%s\n' "$level" "$message"
-}
-
-parse_status_lines() {
-    local line
-
-    while IFS= read -r line; do
-        case "$line" in
-            OK$'\t'*)
-                ok "${line#OK	}"
-                ;;
-            FAIL$'\t'*)
-                fail "${line#FAIL	}"
-                ;;
-            ERROR$'\t'*)
-                err "${line#ERROR	}"
-                ;;
-            "")
-                ;;
-            *)
-                err "Unexpected QC output: $line"
-                ;;
-        esac
-    done
-}
 
 
 ##############################################################################
@@ -182,85 +149,68 @@ normalize_fastq_stream() {
     esac
 }
 
-fastq_basic_checks() {
-    awk '
-        NR == 1 {
-            if ($0 !~ /^@/) {
-                print "ERROR\tFormat error: record 1 does not start with @."
-            }
-        }
-
-        {
-            line_count++
-        }
-
-        END {
-            if (line_count == 0) {
-                print "ERROR\tFile is empty. Please upload a non-empty FASTQ file."
-                exit 0
-            }
-
-        }
-    '
-}
-
-fastq_validator_check() {
-    #check if fastQValidator is available
-    if ! command -v fastQValidator >/dev/null 2>&1; then
-        print_status "FAIL" "fastQValidator not found"
-        return 0 
-    fi
-
-    local vout rc errs
-
-    vout=$(fastQValidator --file /dev/stdin --disableSeqIDCheck 2>&1)
-    rc=$?
-
-    if (( rc == 0)); then 
-        print_status "OK" "fastQValidator passed without errors."
-        return 0 
-    fi
-
-    errs=$(
-        printf '%s\n' "$vout" \
-        | grep '^ERROR on Line ' \
-        | tr '\n' '; ' \
-        | sed 's/; $//'
-    )
-
-    if [[ -z "$errs" ]]; then 
-        print_status "ERROR" "fastQValidator failed, but no detailed error message was returned. Please check if FASTQ format is valid"
-    else
-        print_status "ERROR" "fastQValidator failed: $errs"
-    fi
-
-    return 0
-
-}
-
 check_fastq_stdin() {
-    local qc_output rc
+    local validator_output
+    local rc
+    local errs
 
     begin_file "FASTQ" "$file"
 
-    qc_output=$(
-        {
-            normalize_fastq_stream \
-                | tee >(fastq_validator_check >&3) \
-                | fastq_basic_checks
-     } 3>&1
-    )
-
-    rc=$?
-
-    if (( rc != 0 )); then
-        err "Failed to decompress/read FASTQ file. Please check file integrity and resubmit."
+    if ! command -v fastQValidator >/dev/null 2>&1; then
+        fail "fastQValidator not found."
         end_file
         return $?
     fi
 
-    parse_status_lines <<< "$qc_output"
+    validator_output=$(
+        normalize_fastq_stream \
+            | awk '
+                {
+                    line_count++
+                    print
+                }
 
+                END {
+                    if (line_count == 0) {
+                        print "__INGESTIONQC_EMPTY_FASTQ__" > "/dev/stderr"
+                        exit 1
+                    }
+
+                    if (line_count % 4 != 0) {
+                        print "__INGESTIONQC_BAD_LINE_COUNT__" > "/dev/stderr"
+                        exit 1
+                    }
+                }
+            ' \
+            | fastQValidator --file /dev/stdin --disableSeqIDCheck 2>&1
+    )
+    rc=$?
+
+    if (( rc != 0 )); then
+        if printf '%s\n' "$validator_output" | grep -q '__INGESTIONQC_EMPTY_FASTQ__'; then
+            err "File is empty. Please upload a non-empty FASTQ file."
+        elif printf '%s\n' "$validator_output" | grep -q '__INGESTIONQC_BAD_LINE_COUNT__'; then
+            err "FASTQ line count is not divisible by 4. The file may be truncated or malformed."
+        else
+            errs=$(
+                printf '%s\n' "$validator_output" \
+                    | tr -d '\r' \
+                    | grep -E '^ERROR' \
+                    | paste -sd ';' -
+            )
+
+            if [[ -z "$errs" ]]; then
+                err "Failed to decompress/read FASTQ file or fastQValidator failed without a detailed error message. Please check file integrity and FASTQ format."
+            else
+                err "fastQValidator failed: $errs"
+            fi
+        fi
+
+        end_file
+        return $?
+    fi
+
+    ok "fastQValidator passed and FASTQ line count is valid."
     end_file
     return $?
 }
@@ -321,36 +271,3 @@ esac
 
 
 
-
-
-
-
-
-# fastq_basic_checks() {
-#     awk '
-#         NR == 1 {
-#             if ($0 !~ /^@/) {
-#                 print "ERROR\tFormat error: record 1 does not start with @."
-#             }
-#         }
-
-#         {
-#             line_count++
-#         }
-
-#         END {
-#             if (line_count == 0) {
-#                 print "ERROR\tFile is empty. Please upload a non-empty FASTQ file."
-#                 exit 0
-#             }
-
-#             print "OK\tFASTQ line count: " line_count "."
-
-#             if (line_count % 4 != 0) {
-#                 print "ERROR\tFASTQ line count is not divisible by 4. The file may be truncated or malformed."
-#             } else {
-#                 print "OK\tFASTQ line count is divisible by 4."
-#             }
-#         }
-#     '
-# }
