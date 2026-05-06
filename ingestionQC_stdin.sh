@@ -78,7 +78,7 @@ internal_fail_file() {
 # Options
 ##########################################################################
 
-
+extension=""         # file extension (fastq.gz, bam, cram, vcf.gz, etc.)
 mode=""                # run or analysis
 file="STDIN"                # STDIN from wrapper
 samples=""             # metadata CSV file for VCF sample-name checks
@@ -236,9 +236,9 @@ fastq_validator_check() {
     )
 
     if [[ -z "$errs" ]]; then 
-        print_status "ERROR" "fastQvalidator failed, but no detailed error message was returned. Please check if FASTQ format is valid"
+        print_status "ERROR" "fastQValidator failed, but no detailed error message was returned. Please check if FASTQ format is valid"
     else
-        print_status "ERROR" "fastQvalidator failed: $errs"
+        print_status "ERROR" "fastQValidator failed: $errs"
     fi
 
     return 0
@@ -246,14 +246,16 @@ fastq_validator_check() {
 }
 
 check_fastq_stdin() {
-    local qc output rc
+    local qc_output rc
 
     begin_file "FASTQ" "$file"
 
     qc_output=$(
-        normalize_fastq_stream \
-            | tee >(fastq_validator_check) \
-            | fastq_basic_checks
+        {
+            normalize_fastq_stream \
+                | tee >(fastq_validator_check >&3) \
+                | fastq_basic_checks
+     } 3>&1
     )
 
     rc=$?
