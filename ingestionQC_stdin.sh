@@ -3,6 +3,10 @@
 set +e  # aggregates errors; we do not want to abort afer the first failure but collect all possible issues
 set -o pipefail # ensures that if any command in a pipeline fails, the entire pipeline is considered to have failed (i.e., it will return a non-zero exit status). This is important for error handling, especially when using tools like grep or awk in pipelines, as it allows us to detect failures that might otherwise be masked by successful commands later in the pipeline.
 
+#forces a non-interactive terminal mode and disables colored output, which is important for consistent parsing of error messages from tools like fastQValidator, especially when stripping ANSI escape codes. This ensures that the output is plain text without any formatting characters that could interfere with error detection and reporting.
+export TERM=dumb
+export NO_COLOR=1
+
 declare -a _OKS _FAILS _ERRS
 _cur_type=""
 _cur_file=""
