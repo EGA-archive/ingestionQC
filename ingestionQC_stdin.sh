@@ -169,35 +169,29 @@ check_fastq_stdin() {
     fi
 
     validator_output=$(
-        normalize_fastq_stream \
-            | awk '
-                {
-                    line_count++
-                    print
-                }
-
-                END {
-                    if (line_count == 0) {
-                        print "__INGESTIONQC_EMPTY_FASTQ__" > "/dev/stderr"
-                        exit 1
+        {
+            normalize_fastq_stream \
+                | awk '
+                    {
+                        seen = 1
+                        print
                     }
 
-                    if (line_count % 4 != 0) {
-                        print "__INGESTIONQC_BAD_LINE_COUNT__" > "/dev/stderr"
-                        exit 1
+                    END {
+                        if (!seen) {
+                            print "__INGESTIONQC_EMPTY_FASTQ__" > "/dev/stderr"
+                            exit 1
+                        }
                     }
-                }
-            ' \
-            | fastQValidator --file - --disableSeqIDCheck 2>&1 \
-            | strip_ansi
+                ' \
+                | fastQValidator --file - --disableSeqIDCheck
+        } 2>&1
     )
     rc=$?
 
     if (( rc != 0 )); then
         if printf '%s\n' "$validator_output" | grep -q '__INGESTIONQC_EMPTY_FASTQ__'; then
             err "File is empty. Please upload a non-empty FASTQ file."
-        elif printf '%s\n' "$validator_output" | grep -q '__INGESTIONQC_BAD_LINE_COUNT__'; then
-            err "FASTQ line count is not divisible by 4. The file may be truncated or malformed."
         else
             errs=$(
                 printf '%s\n' "$validator_output" \
