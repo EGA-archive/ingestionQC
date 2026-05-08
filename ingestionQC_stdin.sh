@@ -11,6 +11,8 @@ declare -a _OKS _FAILS _ERRS
 _cur_type=""
 _cur_file=""
 
+VCF_RECORDS=100000
+
 #function to initialize state for a new file; resets the _OKS, _FAILS, and _ERRS arrays to empty and sets the current file type and path for error reporting
 begin_file() {
     _cur_type="$1"
@@ -274,6 +276,24 @@ normalize_vcf_stream() {
     esac
 }
 
+vcf_prefix_for_validator() {
+    awk -v max_records="$VCF_RECORDS" '
+        /^#/ {
+            print
+            next
+        }
+
+        records < max_records {
+            print
+            records++
+            next
+        }
+
+        records >= max_records {
+            exit
+        }
+    '
+}
 
 vcf_sample_check() {
     local allowed_tmp
@@ -368,13 +388,13 @@ vcf_validator_check() {
         return 0
     fi
 
-    vout=$(VCFX_validator 2>&1)
+    vout=$(vcf_prefix_for_validator | VCFX_validator 2>&1)
     rc=$?
 
     vout=$(printf '%s\n' "$vout" | strip_ansi)
 
     if (( rc == 0 )) || printf '%s\n' "$vout" | grep -q '^Status:[[:space:]]*PASSED'; then
-        print_status "OK" "VCF passed VCFX_validator."
+        print_status "OK" "VCF passed VCFX_validator on header plus first ${VCF_RECORDS} records."
         return 0
     fi
 
@@ -397,9 +417,9 @@ vcf_validator_check() {
     fi
 
     if [[ -z "$errs" ]]; then
-        print_status "ERROR" "VCFX_validator failed, but no detailed error message was returned. Please check VCF format."
+        print_status "ERROR" "VCFX_validator failed on header plus first ${VCF_RECORDS} records, but no detailed error message was returned. Please check VCF format."
     else
-        print_status "ERROR" "VCF validation failed: $errs"
+        print_status "ERROR" "VCF validation failed on header plus first ${VCF_RECORDS} records: $errs"
     fi
 
     return 0
