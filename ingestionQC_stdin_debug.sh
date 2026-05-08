@@ -809,6 +809,268 @@ check_bam_stdin() {
 }
 
 ##############################################################################
+# CRAM
+##############################################################################
+
+CRAM_RECORDS="${CRAM_RECORDS:-100000}"
+
+cram_samtools_check() {
+    debug_log "cram_samtools_check: started"
+
+    local check_output
+    local rc
+
+    check_output=$(
+        samtools view -h - 2>&1 \
+            | awk -v mode="$mode" -v max_records="$CRAM_RECORDS" '
+                function has_flag(flag, bit) {
+                    return int(flag / bit) % 2
+                }
+
+                BEGIN {
+                    header_seen = 0
+                    sq_seen = 0
+                    sq_without_m5 = 0
+                    so = ""
+                    records_seen = 0
+                    primary_mapped_seen = 0
+                    samtools_error = ""
+                }
+
+                /^@/ {
+                    header_seen = 1
+
+                    if ($1 == "@SQ") {
+                        sq_seen = 1
+
+                        if ($0 !~ /(^|[ \t])M5:/) {
+                            sq_without_m5++
+                        }
+                    }
+
+                    if ($1 == "@HD") {
+                        for (i = 1; i <= NF; i++) {
+                            if ($i ~ /^SO:/) {
+                                so = substr($i, 4)
+                            }
+                        }
+                    }
+
+                    next
+                }
+
+                /^[[]/ || /^samtools/ || /^E::/ || /^W::/ {
+                    samtools_error = samtools_error $0 "; "
+                    next
+                }
+
+                {
+                    records_seen++
+
+                    flag = $2 + 0
+
+                    # Primary mapped alignment:
+                    #   not unmapped       0x4
+                    #   not secondary      0x100
+                    #   not supplementary  0x800
+                    if (!has_flag(flag, 4) && !has_flag(flag, 256) && !has_flag(flag, 2048)) {
+                        primary_mapped_seen = 1
+                    }
+
+                    if (records_seen >= max_records) {
+                        exit
+                    }
+                }
+
+                END {
+                    if (samtools_error != "") {
+                        sub(/; $/, "", samtools_error)
+                        print "ERROR\tsamtools reported an error while reading CRAM stream: " samtools_error
+                        exit 0
+                    }
+
+                    if (!header_seen) {
+                        print "ERROR\tCRAM header is missing or unreadable."
+                        exit 0
+                    }
+
+                    if (!sq_seen) {
+                        print "ERROR\tCRAM header is missing @SQ reference sequence entries."
+                    } else {
+                        print "OK\tCRAM header contains @SQ reference sequence entries."
+                    }
+
+                    if (sq_without_m5 > 0) {
+                        print "ERROR\tCRAM header has @SQ reference sequence entries without M5 reference MD5 tags."
+                    } else if (sq_seen) {
+                        print "OK\tAll CRAM @SQ reference sequence entries contain M5 tags."
+                    }
+
+                    if (mode != "analysis") {
+                        print "ERROR\tCRAM files need to be uploaded as ANALYSIS."
+                    } else {
+                        print "OK\tCRAM uploaded as ANALYSIS."
+                    }
+
+                    if (primary_mapped_seen) {
+                        print "OK\tCRAM appears to contain primary mapped alignments in the first " records_seen " inspected records."
+
+                        if (so == "coordinate") {
+                            print "OK\tAligned CRAM header reports coordinate sorting."
+                        } else {
+                            print "ERROR\tAligned CRAM is not marked as coordinate sorted in the header (SO:" (so == "" ? "missing" : so) ")."
+                        }
+                    } else {
+                        print "ERROR\tNo primary mapped alignments detected in the first " records_seen " inspected records. CRAM files are expected to be uploaded as ANALYSIS."
+                    }
+                }
+            '
+    )
+    rc=$?
+
+    debug_log "cram_samtools_check: samtools/awk branch finished rc=$rc"
+
+    if [[ "$debug" -eq 1 ]]; then
+        printf '%s\n' "$check_output" | sed 's/^/[DEBUG] CRAM_SAMTOOLS_OUTPUT: /' >&2
+    fi
+
+    # rc=141 is expected when awk exits early after inspecting CRAM_RECORDS records,
+    # causing samtools to receive SIGPIPE. This is not fatal if check_output exists.
+    if (( rc != 0 )) && [[ -z "$check_output" ]]; then
+        print_status "ERROR" "samtools failed to read CRAM stream. Please check file integrity and CRAM format."
+        return 0
+    fi
+
+    printf '%s\n' "$check_output"
+
+    debug_log "cram_samtools_check: finished"
+    return 0
+}
+
+cram_refgen_check() {
+    debug_log "cram_refgen_check: started"
+
+    local rfg_output
+    local rc
+    local species
+    local reference
+
+    debug_log "cram_refgen_check: running refgenDetector -f - -t BAM/CRAM"
+
+    rfg_output=$(refgenDetector -f - -t BAM/CRAM 2>&1)
+    rc=$?
+
+    debug_log "cram_refgen_check: refgenDetector finished rc=$rc"
+
+    rfg_output=$(printf '%s\n' "$rfg_output" | strip_ansi)
+
+    if [[ "$debug" -eq 1 ]]; then
+        printf '%s\n' "$rfg_output" | sed 's/^/[DEBUG] CRAM_REFGEN_OUTPUT: /' >&2
+    fi
+
+    if (( rc != 0 )); then
+        print_status "ERROR" "refgenDetector failed to inspect CRAM stream."
+        return 0
+    fi
+
+    species=$(
+        printf '%s\n' "$rfg_output" \
+            | awk -F'Species detected:[[:space:]]*' '/Species detected:/ {print $2; exit}' \
+            | xargs
+    )
+
+    reference=$(
+        printf '%s\n' "$rfg_output" \
+            | awk -F'Reference genome version[[:space:]]*:[[:space:]]*' '/Reference genome version/ {print $2; exit}' \
+            | xargs
+    )
+
+    debug_log "cram_refgen_check: parsed species='${species:-NA}' reference='${reference:-NA}'"
+
+    if [[ -z "$species" ]]; then
+        print_status "ERROR" "refgenDetector produced no species result."
+        return 0
+    fi
+
+    if [[ "$species" != "Homo sapiens" ]]; then
+        print_status "ERROR" "refgenDetector: species is not human ($species)."
+        return 0
+    fi
+
+    if [[ -n "$reference" ]]; then
+        print_status "OK" "refgenDetector detected Homo sapiens reference genome ($reference)."
+    else
+        print_status "OK" "refgenDetector detected Homo sapiens."
+    fi
+
+    debug_log "cram_refgen_check: finished"
+    return 0
+}
+
+check_cram_stdin() {
+    local qc_output
+    local rc
+
+    begin_file "CRAM" "$file"
+
+    debug_log "check_cram_stdin: started extension=$extension mode=$mode file=$file CRAM_RECORDS=$CRAM_RECORDS"
+
+    if ! command -v samtools >/dev/null 2>&1; then
+        fail "samtools not found."
+        debug_log "check_cram_stdin: samtools not found"
+        end_file
+        return $?
+    fi
+
+    if ! command -v refgenDetector >/dev/null 2>&1; then
+        fail "refgenDetector not found."
+        debug_log "check_cram_stdin: refgenDetector not found"
+        end_file
+        return $?
+    fi
+
+    debug_log "check_cram_stdin: starting tee pipeline"
+
+    qc_output=$(
+        {
+            cat - \
+                | tee -p >(cram_refgen_check >&3) \
+                | cram_samtools_check
+        } 3>&1
+    )
+    rc=$?
+
+    debug_log "check_cram_stdin: tee pipeline finished rc=$rc"
+
+    qc_output=$(printf '%s\n' "$qc_output" | strip_ansi)
+
+    if [[ "$debug" -eq 1 ]]; then
+        debug_log "check_cram_stdin: collected QC output follows"
+        printf '%s\n' "$qc_output" | sed 's/^/[DEBUG] QC_OUTPUT: /' >&2
+    fi
+
+    # rc=141 is expected when tee receives SIGPIPE because one QC branch
+    # finished earlier than the other. This is not fatal if QC output exists.
+    if (( rc != 0 )) && [[ -z "$qc_output" ]]; then
+        err "CRAM stream processing failed before QC results could be collected. Please check file integrity and CRAM format."
+        debug_log "check_cram_stdin: failing because pipeline rc=$rc and qc_output is empty"
+        end_file
+        return $?
+    fi
+
+    if (( rc != 0 )); then
+        debug_log "check_cram_stdin: pipeline rc=$rc but QC output was collected; continuing"
+    fi
+
+    parse_status_lines <<< "$qc_output"
+
+    debug_log "check_cram_stdin: parsed status lines"
+
+    end_file
+    return $?
+}
+
+##############################################################################
 # Main
 ##############################################################################
 
@@ -834,6 +1096,10 @@ case "$extension" in
     ;;
     bam)
         check_bam_stdin
+        exit $?
+        ;;
+    cram)
+        check_cram_stdin
         exit $?
         ;;
   *)
