@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 
-set +e  # aggregates errors; we do not want to abort afer the first failure but collect all possible issues
-set -o pipefail # ensures that if any command in a pipeline fails, the entire pipeline is considered to have failed (i.e., it will return a non-zero exit status). This is important for error handling, especially when using tools like grep or awk in pipelines, as it allows us to detect failures that might otherwise be masked by successful commands later in the pipeline.
+set +e
+set -o pipefail
 
-#forces a non-interactive terminal mode and disables colored output, which is important for consistent parsing of error messages from tools like fastQValidator, especially when stripping ANSI escape codes. This ensures that the output is plain text without any formatting characters that could interfere with error detection and reporting.
 export TERM=dumb
 export NO_COLOR=1
 
@@ -11,8 +10,6 @@ declare -a _OKS _FAILS _ERRS
 _cur_type=""
 _cur_file=""
 
-
-#function to initialize state for a new file; resets the _OKS, _FAILS, and _ERRS arrays to empty and sets the current file type and path for error reporting
 begin_file() {
     _cur_type="$1"
     _cur_file="$2"
@@ -25,43 +22,44 @@ ok()   { _OKS+=("$1"); }
 fail() { _FAILS+=("$1"); }
 err()  { _ERRS+=("$1"); }
 
-# function to print the final status message for the current file based on the contents of the _OKS, _FAILS, and _ERRS arrays. 
-# If there are any errors, it prints an [ERROR] message with all errors concatenated. If there are no errors but there are failures, it prints a [FAIL] message with all failures concatenated. If there are no errors or failures, it prints an [OK] message.
 end_file() {
-  local msg
+    local msg
 
-  if ((${#_ERRS[@]})); then
-    msg=$(printf '%s; ' "${_ERRS[@]}")
-    msg=${msg%; }   # remove trailing "; "
-    printf '[ERROR] %s %s - %s\n' "$_cur_type" "$_cur_file" "$msg"
-    return 1
-  fi
+    if ((${#_ERRS[@]})); then
+        msg=$(printf '%s; ' "${_ERRS[@]}")
+        msg=${msg%; }
+        printf '[ERROR] %s %s - %s\n' "$_cur_type" "$_cur_file" "$msg"
+        return 1
+    fi
 
-  if ((${#_FAILS[@]})); then
-    msg=$(printf '%s; ' "${_FAILS[@]}")
-    msg=${msg%; }
-    printf '[FAIL] %s %s - %s\n' "$_cur_type" "$_cur_file" "$msg"
+    if ((${#_FAILS[@]})); then
+        msg=$(printf '%s; ' "${_FAILS[@]}")
+        msg=${msg%; }
+        printf '[FAIL] %s %s - %s\n' "$_cur_type" "$_cur_file" "$msg"
+        return 0
+    fi
+
+    printf '[OK] %s %s - file OK\n' "$_cur_type" "$_cur_file"
     return 0
-  fi
-
-  printf '[OK] %s %s - file OK\n' "$_cur_type" "$_cur_file"
-  return 0
 }
 
-# help message function; prints usage instructions and exits with status 1
 usage() {
     echo "Usage: $0 [OPTIONS] -f <stdin> -e <extension> [-s <samples>]"
     echo "Options:"
-    echo "  -e, --extension EXT      File extension (e.g., fastq.gz, bam, cram)"
-    echo "  -r, --run           Run mode (default)"
-    echo "  -a, --analysis      Analysis mode (skips some checks)"
-    echo "  -f, --file STDIN     Input STDIN to check"
-    echo "  -s, --samples FILE    Metadata CSV file used for VCF sample-name checks"
-    echo "  -h, --help          Show this help message and exit"
+    echo "  -e, --extension EXT      File extension (e.g., fastq.gz, vcf.gz, bam, cram)"
+    echo "  -r, --run                Run mode"
+    echo "  -a, --analysis           Analysis mode"
+    echo "  -f, --file STDIN         Input STDIN/display name to check"
+    echo "  -s, --samples FILE       Metadata CSV file used for VCF sample-name checks"
+    echo "  -h, --help               Show this help message and exit"
+    echo
+    echo "Environment:"
+    echo "  VCF_RECORDS=N            Number of VCF records sent to VCFX_validator, default 100000"
+    echo "  BAM_RECORDS=N            Number of BAM records inspected, default 100000"
+    echo "  CRAM_RECORDS=N           Number of CRAM records inspected, default 100000"
     exit 1
 }
 
-# helper function to control the mode errors
 reject_file() {
     local type="$1" f="$2" msg="$3"
     begin_file "$type" "$f"
@@ -70,7 +68,6 @@ reject_file() {
     return $?
 }
 
-# helper function to control fails (e.g., missing helper tool)
 internal_fail_file() {
     local type="$1" f="$2" msg="$3"
     begin_file "$type" "$f"
@@ -117,18 +114,19 @@ parse_status_lines() {
     done
 }
 
-
-##########################################################################
+##############################################################################
 # Options
-##########################################################################
+##############################################################################
 
-extension=""         # file extension (fastq.gz, bam, cram, vcf.gz, etc.)
-mode=""                # run or analysis
-file="STDIN"                # STDIN from wrapper
-samples=""             # metadata CSV file for VCF sample-name checks
-VCF_RECORDS="${VCF_RECORDS:-100000}" # number of VCF records to check with VCFX_validator
+extension=""
+mode=""
+file="STDIN"
+samples=""
 
-#get options and arguments 
+VCF_RECORDS="${VCF_RECORDS:-100000}"
+BAM_RECORDS="${BAM_RECORDS:-100000}"
+CRAM_RECORDS="${CRAM_RECORDS:-100000}"
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -r|--run)
@@ -173,10 +171,6 @@ if [[ -z "$extension" ]]; then
     echo "Error: --extension is required"
     usage
 fi
-
-strip_ansi() {
-    sed -E $'s/\x1B\\[[0-9;?]*[A-Za-z]//g'
-}
 
 ##############################################################################
 # FASTQ
@@ -230,6 +224,8 @@ check_fastq_stdin() {
     )
     rc=$?
 
+    validator_output=$(printf '%s\n' "$validator_output" | strip_ansi)
+
     if (( rc != 0 )); then
         if printf '%s\n' "$validator_output" | grep -q '__INGESTIONQC_EMPTY_FASTQ__'; then
             err "File is empty. Please upload a non-empty FASTQ file."
@@ -252,11 +248,10 @@ check_fastq_stdin() {
         return $?
     fi
 
-    ok "fastQValidator passed and FASTQ line count is valid."
+    ok "fastQValidator passed."
     end_file
     return $?
 }
-
 
 ##############################################################################
 # VCF
@@ -305,11 +300,6 @@ vcf_sample_check() {
         return 0
     }
 
-    # Metadata CSV columns:
-    #   alias,stable_id,sample_id
-    #
-    # A VCF sample is accepted if it matches any non-empty value
-    # in alias, stable_id, or sample_id.
     awk -F',' '
         NR > 1 {
             for (i = 1; i <= 3; i++) {
@@ -318,6 +308,14 @@ vcf_sample_check() {
             }
         }
     ' "$samples" | sort -u > "$allowed_tmp"
+
+    rc=$?
+
+    if (( rc != 0 )); then
+        rm -f "$allowed_tmp"
+        print_status "FAIL" "Could not read sample metadata CSV."
+        return 0
+    fi
 
     if [[ ! -s "$allowed_tmp" ]]; then
         rm -f "$allowed_tmp"
@@ -377,7 +375,6 @@ vcf_sample_check() {
     return 0
 }
 
-
 vcf_validator_check() {
     local vout
     local rc
@@ -424,7 +421,6 @@ vcf_validator_check() {
 
     return 0
 }
-
 
 check_vcf_stdin() {
     local qc_output
@@ -473,8 +469,6 @@ check_vcf_stdin() {
 
     qc_output=$(printf '%s\n' "$qc_output" | strip_ansi)
 
-    # rc=141 is expected when tee/gunzip receives SIGPIPE because one or more
-    # QC branches finished early. This is not fatal if we collected QC output.
     if (( rc != 0 )) && [[ -z "$qc_output" ]]; then
         err "VCF stream processing failed before QC results could be collected. Please check file integrity and VCF format."
         end_file
@@ -491,14 +485,12 @@ check_vcf_stdin() {
 # BAM
 ##############################################################################
 
-BAM_RECORDS="${BAM_RECORDS:-100000}"
-
 bam_samtools_check() {
     local check_output
     local rc
 
     check_output=$(
-        samtools view -h - 2>/dev/null \
+        samtools view -h - 2>&1 \
             | awk -v mode="$mode" -v max_records="$BAM_RECORDS" '
                 function has_flag(flag, bit) {
                     return int(flag / bit) % 2
@@ -510,6 +502,7 @@ bam_samtools_check() {
                     so = ""
                     records_seen = 0
                     primary_mapped_seen = 0
+                    samtools_error = ""
                 }
 
                 /^@/ {
@@ -530,15 +523,16 @@ bam_samtools_check() {
                     next
                 }
 
+                /^[[]/ || /^samtools/ || /^E::/ || /^W::/ {
+                    samtools_error = samtools_error $0 "; "
+                    next
+                }
+
                 {
                     records_seen++
 
                     flag = $2 + 0
 
-                    # Primary mapped alignment:
-                    #   not unmapped       0x4
-                    #   not secondary      0x100
-                    #   not supplementary  0x800
                     if (!has_flag(flag, 4) && !has_flag(flag, 256) && !has_flag(flag, 2048)) {
                         primary_mapped_seen = 1
                     }
@@ -549,6 +543,12 @@ bam_samtools_check() {
                 }
 
                 END {
+                    if (samtools_error != "") {
+                        sub(/; $/, "", samtools_error)
+                        print "ERROR\tsamtools reported an error while reading BAM stream: " samtools_error
+                        exit 0
+                    }
+
                     if (!header_seen) {
                         print "ERROR\tBAM header is missing or unreadable."
                         exit 0
@@ -561,7 +561,7 @@ bam_samtools_check() {
                     }
 
                     if (primary_mapped_seen) {
-                        print "OK\tBAM appears to contain primary mapped alignments in the inspected records."
+                        print "OK\tBAM appears to contain primary mapped alignments in the first " records_seen " inspected records."
 
                         if (mode == "run") {
                             print "ERROR\tThis BAM appears to be ALIGNED; please upload this file as an ANALYSIS, not a RUN."
@@ -575,7 +575,7 @@ bam_samtools_check() {
                             print "ERROR\tAligned BAM is not marked as coordinate sorted in the header (SO:" (so == "" ? "missing" : so) ")."
                         }
                     } else {
-                        print "OK\tNo primary mapped alignments detected in the first " max_records " inspected records."
+                        print "OK\tNo primary mapped alignments detected in the first " records_seen " inspected records."
 
                         if (mode == "run") {
                             print "OK\tUnaligned BAM uploaded as RUN."
@@ -589,8 +589,8 @@ bam_samtools_check() {
     rc=$?
 
     if (( rc != 0 )) && [[ -z "$check_output" ]]; then
-    print_status "ERROR" "samtools failed to read BAM stream. Please check file integrity and BAM format."
-    return 0
+        print_status "ERROR" "samtools failed to read BAM stream. Please check file integrity and BAM format."
+        return 0
     fi
 
     printf '%s\n' "$check_output"
@@ -673,8 +673,6 @@ check_bam_stdin() {
 
     qc_output=$(printf '%s\n' "$qc_output" | strip_ansi)
 
-    # rc=141 is expected when tee receives SIGPIPE because one QC branch
-    # finished earlier than the other. This is not fatal if QC output exists.
     if (( rc != 0 )) && [[ -z "$qc_output" ]]; then
         err "BAM stream processing failed before QC results could be collected. Please check file integrity and BAM format."
         end_file
@@ -687,56 +685,252 @@ check_bam_stdin() {
     return $?
 }
 
+##############################################################################
+# CRAM
+##############################################################################
+
+cram_samtools_check() {
+    local check_output
+    local rc
+
+    check_output=$(
+        samtools view -h - 2>&1 \
+            | awk -v mode="$mode" -v max_records="$CRAM_RECORDS" '
+                function has_flag(flag, bit) {
+                    return int(flag / bit) % 2
+                }
+
+                BEGIN {
+                    header_seen = 0
+                    sq_seen = 0
+                    sq_without_m5 = 0
+                    so = ""
+                    records_seen = 0
+                    primary_mapped_seen = 0
+                    samtools_error = ""
+                }
+
+                /^@/ {
+                    header_seen = 1
+
+                    if ($1 == "@SQ") {
+                        sq_seen = 1
+
+                        if ($0 !~ /(^|[ \t])M5:/) {
+                            sq_without_m5++
+                        }
+                    }
+
+                    if ($1 == "@HD") {
+                        for (i = 1; i <= NF; i++) {
+                            if ($i ~ /^SO:/) {
+                                so = substr($i, 4)
+                            }
+                        }
+                    }
+
+                    next
+                }
+
+                /^[[]/ || /^samtools/ || /^E::/ || /^W::/ {
+                    samtools_error = samtools_error $0 "; "
+                    next
+                }
+
+                {
+                    records_seen++
+
+                    flag = $2 + 0
+
+                    if (!has_flag(flag, 4) && !has_flag(flag, 256) && !has_flag(flag, 2048)) {
+                        primary_mapped_seen = 1
+                    }
+
+                    if (records_seen >= max_records) {
+                        exit
+                    }
+                }
+
+                END {
+                    if (samtools_error != "") {
+                        sub(/; $/, "", samtools_error)
+                        print "ERROR\tsamtools reported an error while reading CRAM stream: " samtools_error
+                        exit 0
+                    }
+
+                    if (!header_seen) {
+                        print "ERROR\tCRAM header is missing or unreadable."
+                        exit 0
+                    }
+
+                    if (!sq_seen) {
+                        print "ERROR\tCRAM header is missing @SQ reference sequence entries."
+                    } else {
+                        print "OK\tCRAM header contains @SQ reference sequence entries."
+                    }
+
+                    if (sq_without_m5 > 0) {
+                        print "ERROR\tCRAM header has @SQ reference sequence entries without M5 reference MD5 tags."
+                    } else if (sq_seen) {
+                        print "OK\tAll CRAM @SQ reference sequence entries contain M5 tags."
+                    }
+
+                    if (mode != "analysis") {
+                        print "ERROR\tCRAM files need to be uploaded as ANALYSIS."
+                    } else {
+                        print "OK\tCRAM uploaded as ANALYSIS."
+                    }
+
+                    if (primary_mapped_seen) {
+                        print "OK\tCRAM appears to contain primary mapped alignments in the first " records_seen " inspected records."
+
+                        if (so == "coordinate") {
+                            print "OK\tAligned CRAM header reports coordinate sorting."
+                        } else {
+                            print "ERROR\tAligned CRAM is not marked as coordinate sorted in the header (SO:" (so == "" ? "missing" : so) ")."
+                        }
+                    } else {
+                        print "ERROR\tNo primary mapped alignments detected in the first " records_seen " inspected records. CRAM files are expected to be uploaded as ANALYSIS."
+                    }
+                }
+            '
+    )
+    rc=$?
+
+    if (( rc != 0 )) && [[ -z "$check_output" ]]; then
+        print_status "ERROR" "samtools failed to read CRAM stream. Please check file integrity and CRAM format."
+        return 0
+    fi
+
+    printf '%s\n' "$check_output"
+    return 0
+}
+
+cram_refgen_check() {
+    local rfg_output
+    local rc
+    local species
+    local reference
+
+    rfg_output=$(refgenDetector -f - -t BAM/CRAM 2>&1)
+    rc=$?
+
+    rfg_output=$(printf '%s\n' "$rfg_output" | strip_ansi)
+
+    if (( rc != 0 )); then
+        print_status "ERROR" "refgenDetector failed to inspect CRAM stream."
+        return 0
+    fi
+
+    species=$(
+        printf '%s\n' "$rfg_output" \
+            | awk -F'Species detected:[[:space:]]*' '/Species detected:/ {print $2; exit}' \
+            | xargs
+    )
+
+    reference=$(
+        printf '%s\n' "$rfg_output" \
+            | awk -F'Reference genome version[[:space:]]*:[[:space:]]*' '/Reference genome version/ {print $2; exit}' \
+            | xargs
+    )
+
+    if [[ -z "$species" ]]; then
+        print_status "ERROR" "refgenDetector produced no species result."
+        return 0
+    fi
+
+    if [[ "$species" != "Homo sapiens" ]]; then
+        print_status "ERROR" "refgenDetector: species is not human ($species)."
+        return 0
+    fi
+
+    if [[ -n "$reference" ]]; then
+        print_status "OK" "refgenDetector detected Homo sapiens reference genome ($reference)."
+    else
+        print_status "OK" "refgenDetector detected Homo sapiens."
+    fi
+
+    return 0
+}
+
+check_cram_stdin() {
+    local qc_output
+    local rc
+
+    begin_file "CRAM" "$file"
+
+    if ! command -v samtools >/dev/null 2>&1; then
+        fail "samtools not found."
+        end_file
+        return $?
+    fi
+
+    if ! command -v refgenDetector >/dev/null 2>&1; then
+        fail "refgenDetector not found."
+        end_file
+        return $?
+    fi
+
+    qc_output=$(
+        {
+            cat - \
+                | tee -p >(cram_refgen_check >&3) \
+                | cram_samtools_check
+        } 3>&1
+    )
+    rc=$?
+
+    qc_output=$(printf '%s\n' "$qc_output" | strip_ansi)
+
+    if (( rc != 0 )) && [[ -z "$qc_output" ]]; then
+        err "CRAM stream processing failed before QC results could be collected. Please check file integrity and CRAM format."
+        end_file
+        return $?
+    fi
+
+    parse_status_lines <<< "$qc_output"
+
+    end_file
+    return $?
+}
 
 ##############################################################################
 # Main
 ##############################################################################
 
-
-# -- determine file type and execute checks -- 
 case "$extension" in
-  fastq|fastq.gz|fastq.bz2|fq|fq.gz|fq.bz2)
-    if [[ "$mode" == "run" ]]; then
-        check_fastq_stdin "$file"
-        exit $?
-    else
-        reject_file "FASTQ" "$file" "FASTQ files need to be uploaded as RUNs."
-        exit $?
-    fi
-    ;;   
-    vcf|vcf.gz|vcf.bz2|bcf)
-    if [[ "$mode" == "run" ]]; then
-        reject_file "VCF" "$file" "VCF/BCF files need to be uploaded as ANALYSIS."
-        exit $?
-    fi
+    fastq|fastq.gz|fastq.bz2|fq|fq.gz|fq.bz2)
+        if [[ "$mode" == "run" ]]; then
+            check_fastq_stdin "$file"
+            exit $?
+        else
+            reject_file "FASTQ" "$file" "FASTQ files need to be uploaded as RUNs."
+            exit $?
+        fi
+        ;;
 
-    check_vcf_stdin
-    exit $?
-    ;;
+    vcf|vcf.gz|vcf.bz2)
+        if [[ "$mode" == "run" ]]; then
+            reject_file "VCF" "$file" "VCF files need to be uploaded as ANALYSIS."
+            exit $?
+        fi
+
+        check_vcf_stdin
+        exit $?
+        ;;
+
     bam)
         check_bam_stdin
         exit $?
         ;;
-  *)
-    echo "[WARNING] FILE $file - unsupported extension; skipping"
-    exit 0
-    ;;
+
+    cram)
+        check_cram_stdin
+        exit $?
+        ;;
+
+    *)
+        echo "[WARNING] FILE $file - unsupported extension; skipping"
+        exit 0
+        ;;
 esac
-
-
-
-
-
-#   bam|bam.gz)
-#     check_bam "$file"
-#     exit $?
-#     ;;
-#   cram|cram.gz) 
-#     if [[ "$mode" == "analysis" ]]; then
-#         check_cram "$file"
-#         exit $?
-#     else 
-#         reject_file "CRAM" "$file" "CRAM files need to be uploaded as ANALYSIS"
-#         exit $?
-#     fi
-#     ;;

@@ -1073,7 +1073,7 @@ check_cram_stdin() {
 ##############################################################################
 # Main
 ##############################################################################
-
+ 
 # -- determine file type and execute checks -- 
 case "$extension" in
   fastq|fastq.gz|fastq.bz2|fq|fq.gz|fq.bz2)
