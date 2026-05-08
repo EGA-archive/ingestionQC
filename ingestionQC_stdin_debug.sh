@@ -534,11 +534,15 @@ check_vcf_stdin() {
         printf '%s\n' "$qc_output" | sed 's/^/[DEBUG] QC_OUTPUT: /' >&2
     fi
 
-    if (( rc != 0 )); then
+    if (( rc != 0 )) && [[ -z "$qc_output" ]]; then
         err "VCF stream processing failed before QC results could be collected. Please check file integrity and VCF format."
-        debug_log "check_vcf_stdin: failing because pipeline rc=$rc"
+        debug_log "check_vcf_stdin: failing because pipeline rc=$rc and qc_output is empty"
         end_file
         return $?
+    fi
+
+    if (( rc != 0 )); then
+        debug_log "check_vcf_stdin: pipeline rc=$rc but QC output was collected; continuing"
     fi
 
     parse_status_lines <<< "$qc_output"
