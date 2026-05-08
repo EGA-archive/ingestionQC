@@ -216,8 +216,9 @@ check_fastq_stdin() {
     return $?
 }
 
+
 ##############################################################################
-# VCF / BCF
+# VCF
 ##############################################################################
 
 normalize_vcf_stream() {
@@ -231,93 +232,92 @@ normalize_vcf_stream() {
         vcf.bz2)
             bunzip2 -c -
             ;;
-        bcf)
-            bcftools view -
-            ;;
     esac
 }
 
+
 vcf_sample_check() {
-    awk -v samples_file="$samples" '
-        BEGIN {
-            FS = "\t"
+    local allowed_tmp
+    local bcftools_output
+    local rc
 
-            # Metadata CSV columns:
-            #   1 alias
-            #   2 stable_id
-            #   3 sample_id
-            #
-            # A VCF sample is accepted if it matches any non-empty value
-            # in alias, stable_id, or sample_id.
-            while ((getline csv_line < samples_file) > 0) {
-                csv_nr++
+    allowed_tmp=$(mktemp) || {
+        print_status "FAIL" "Could not create temporary file for metadata sample names."
+        return 0
+    }
 
-                # Skip header: alias,stable_id,sample_id
-                if (csv_nr == 1) {
-                    continue
-                }
-
-                n = split(csv_line, fields, ",")
-
-                for (i = 1; i <= 3 && i <= n; i++) {
-                    gsub(/^[ \t\r]+|[ \t\r]+$/, "", fields[i])
-
-                    if (fields[i] != "") {
-                        registered_samples[fields[i]] = 1
-                    }
-                }
-            }
-
-            close(samples_file)
-        }
-
-        /^#CHROM[ \t]/ || $0 == "#CHROM" {
-            chrom_seen = 1
-
-            # VCF sample columns start at column 10:
-            # CHROM POS ID REF ALT QUAL FILTER INFO FORMAT SAMPLE...
-            if (NF > 9) {
-                for (i = 10; i <= NF; i++) {
-                    if (!($i in registered_samples)) {
-                        missing_samples[$i] = 1
-                    }
-                }
+    # Metadata CSV columns:
+    #   alias,stable_id,sample_id
+    #
+    # A VCF sample is accepted if it matches any non-empty value
+    # in alias, stable_id, or sample_id.
+    awk -F',' '
+        NR > 1 {
+            for (i = 1; i <= 3; i++) {
+                gsub(/^[ \t\r]+|[ \t\r]+$/, "", $i)
+                if ($i != "") print $i
             }
         }
+    ' "$samples" | sort -u > "$allowed_tmp"
 
-        END {
-            if (!chrom_seen) {
-                print "ERROR\tCould not find #CHROM header line, so VCF samples could not be checked."
-                exit 0
-            }
+    if [[ ! -s "$allowed_tmp" ]]; then
+        rm -f "$allowed_tmp"
+        print_status "FAIL" "No sample identifiers could be read from metadata CSV."
+        return 0
+    fi
 
-            missing_count = 0
-            missing_list = ""
+    bcftools_output=$(
+        bcftools query -l 2>&1 \
+            | awk -v allowed_file="$allowed_tmp" '
+                BEGIN {
+                    while ((getline s < allowed_file) > 0) {
+                        allowed[s] = 1
+                    }
+                    close(allowed_file)
+                }
 
-            for (sample in missing_samples) {
-                missing_count++
+                {
+                    if ($0 != "" && !($0 in allowed)) {
+                        missing[$0] = 1
+                    }
+                }
 
-                if (missing_count <= 20) {
-                    if (missing_list == "") {
-                        missing_list = sample
+                END {
+                    count = 0
+                    list = ""
+
+                    for (s in missing) {
+                        count++
+                        if (count <= 20) {
+                            list = list (list == "" ? "" : ",") s
+                        }
+                    }
+
+                    if (count > 0) {
+                        if (count > 20) {
+                            print "ERROR\tSamples present in VCF but missing from registered metadata: " list ", ... (" count " total missing samples)."
+                        } else {
+                            print "ERROR\tSamples present in VCF but missing from registered metadata: " list "."
+                        }
                     } else {
-                        missing_list = missing_list "," sample
+                        print "OK\tAll VCF samples are present in registered metadata."
                     }
                 }
-            }
+            '
+    )
+    rc=$?
 
-            if (missing_count > 0) {
-                if (missing_count > 20) {
-                    print "ERROR\tSamples present in VCF but missing from registered metadata: " missing_list ", ... (" missing_count " total missing samples)."
-                } else {
-                    print "ERROR\tSamples present in VCF but missing from registered metadata: " missing_list "."
-                }
-            } else {
-                print "OK\tAll VCF samples are present in registered metadata."
-            }
-        }
-    '
+    rm -f "$allowed_tmp"
+
+    if (( rc != 0 )); then
+        print_status "ERROR" "Could not extract sample names from VCF stream with bcftools."
+        return 0
+    fi
+
+    printf '%s\n' "$bcftools_output"
+    return 0
 }
+
 
 vcf_validator_check() {
     local vout
@@ -366,6 +366,7 @@ vcf_validator_check() {
     return 0
 }
 
+
 check_vcf_stdin() {
     local qc_output
     local rc
@@ -373,7 +374,7 @@ check_vcf_stdin() {
     begin_file "VCF" "$file"
 
     if [[ "$mode" != "analysis" ]]; then
-        err "VCF/BCF files need to be uploaded as ANALYSIS."
+        err "VCF files need to be uploaded as ANALYSIS."
         end_file
         return $?
     fi
@@ -390,8 +391,14 @@ check_vcf_stdin() {
         return $?
     fi
 
-    if [[ "$extension" == "bcf" ]] && ! command -v bcftools >/dev/null 2>&1; then
-        fail "bcftools not found; BCF input cannot be converted to VCF."
+    if ! command -v bcftools >/dev/null 2>&1; then
+        fail "bcftools not found; VCF sample names cannot be checked."
+        end_file
+        return $?
+    fi
+
+    if ! command -v VCFX_validator >/dev/null 2>&1; then
+        fail "VCFX_validator not found."
         end_file
         return $?
     fi
@@ -408,7 +415,7 @@ check_vcf_stdin() {
     qc_output=$(printf '%s\n' "$qc_output" | strip_ansi)
 
     if (( rc != 0 )); then
-        err "Failed to decompress/read VCF/BCF stream. Please check file integrity and resubmit."
+        err "Failed to decompress/read VCF stream. Please check file integrity and resubmit."
         end_file
         return $?
     fi
