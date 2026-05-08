@@ -78,6 +78,45 @@ internal_fail_file() {
     return $?
 }
 
+##############################################################################
+# Shared helpers
+##############################################################################
+
+strip_ansi() {
+    sed -E $'s/\x1B\\[[0-9;?]*[A-Za-z]//g'
+}
+
+print_status() {
+    local level="$1"
+    local message="$2"
+
+    printf '%s\t%s\n' "$level" "$message"
+}
+
+parse_status_lines() {
+    local line
+
+    while IFS= read -r line; do
+        case "$line" in
+            OK$'\t'*)
+                ok "${line#OK	}"
+                ;;
+            FAIL$'\t'*)
+                fail "${line#FAIL	}"
+                ;;
+            ERROR$'\t'*)
+                err "${line#ERROR	}"
+                ;;
+            "")
+                ;;
+            *)
+                err "Unexpected QC output: $line"
+                ;;
+        esac
+    done
+}
+
+
 ##########################################################################
 # Options
 ##########################################################################
