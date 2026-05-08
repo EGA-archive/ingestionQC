@@ -435,18 +435,13 @@ case "$extension" in
         exit $?
     fi
     ;;   
-  vcf|vcf.gz|vcf.bz2)
+    vcf|vcf.gz|vcf.bz2|bcf)
     if [[ "$mode" == "run" ]]; then
-        reject_file "VCF" "$file" "VCF/BCF files need to be uploaded as ANALYSIS"
-        exit $?
-    fi
-    
-    if [[ -z "$samples" ]]; then
-        internal_fail_file "VCF" "$file" "Sample metadata CSV (-s) was not provided to the QC script"
+        reject_file "VCF" "$file" "VCF/BCF files need to be uploaded as ANALYSIS."
         exit $?
     fi
 
-    check_vcf "$file"
+    check_vcf_stdin
     exit $?
     ;;
   *)
