@@ -453,8 +453,13 @@ check_vcf_stdin() {
 
     qc_output=$(printf '%s\n' "$qc_output" | strip_ansi)
 
-    if (( rc != 0 )); then
-        err "Failed to decompress/read VCF stream. Please check file integrity and resubmit."
+    # rc=141 is expected when tee/gunzip receives SIGPIPE because all QC branches
+    # finished early. This is not fatal if we collected valid QC status lines.
+    if (( rc != 0 && rc != 141 )); then
+        if [[ -z "$qc_output" ]]; then
+            err "VCF stream processing failed before QC results could be collected. Please check file integrity and VCF format."
+            debug_log "check_vcf_stdin: failing because pipeline rc=$rc and qc_output is empty"
+        fi
         end_file
         return $?
     fi
