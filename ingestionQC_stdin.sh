@@ -11,7 +11,6 @@ declare -a _OKS _FAILS _ERRS
 _cur_type=""
 _cur_file=""
 
-VCF_RECORDS=100000
 
 #function to initialize state for a new file; resets the _OKS, _FAILS, and _ERRS arrays to empty and sets the current file type and path for error reporting
 begin_file() {
@@ -127,6 +126,7 @@ extension=""         # file extension (fastq.gz, bam, cram, vcf.gz, etc.)
 mode=""                # run or analysis
 file="STDIN"                # STDIN from wrapper
 samples=""             # metadata CSV file for VCF sample-name checks
+VCF_RECORDS="${VCF_RECORDS:-100000}" # number of VCF records to check with VCFX_validator
 
 #get options and arguments 
 while [[ $# -gt 0 ]]; do
