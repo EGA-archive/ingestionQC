@@ -674,9 +674,9 @@ bam_samtools_check() {
         printf '%s\n' "$check_output" | sed 's/^/[DEBUG] BAM_SAMTOOLS_OUTPUT: /' >&2
     fi
 
-    if (( rc != 0 )); then
-        print_status "ERROR" "samtools failed to read BAM stream. Please check file integrity and BAM format."
-        return 0
+    if (( rc != 0 )) && [[ -z "$check_output" ]]; then
+    print_status "ERROR" "samtools failed to read BAM stream. Please check file integrity and BAM format."
+    return 0
     fi
 
     printf '%s\n' "$check_output"
