@@ -216,6 +216,208 @@ check_fastq_stdin() {
     return $?
 }
 
+##############################################################################
+# VCF / BCF
+##############################################################################
+
+normalize_vcf_stream() {
+    case "$extension" in
+        vcf)
+            cat -
+            ;;
+        vcf.gz)
+            gunzip -c -
+            ;;
+        vcf.bz2)
+            bunzip2 -c -
+            ;;
+        bcf)
+            bcftools view -
+            ;;
+    esac
+}
+
+vcf_sample_check() {
+    awk -v samples_file="$samples" '
+        BEGIN {
+            FS = "\t"
+
+            # Metadata CSV columns:
+            #   1 alias
+            #   2 stable_id
+            #   3 sample_id
+            #
+            # A VCF sample is accepted if it matches any non-empty value
+            # in alias, stable_id, or sample_id.
+            while ((getline csv_line < samples_file) > 0) {
+                csv_nr++
+
+                # Skip header: alias,stable_id,sample_id
+                if (csv_nr == 1) {
+                    continue
+                }
+
+                n = split(csv_line, fields, ",")
+
+                for (i = 1; i <= 3 && i <= n; i++) {
+                    gsub(/^[ \t\r]+|[ \t\r]+$/, "", fields[i])
+
+                    if (fields[i] != "") {
+                        registered_samples[fields[i]] = 1
+                    }
+                }
+            }
+
+            close(samples_file)
+        }
+
+        /^#CHROM[ \t]/ || $0 == "#CHROM" {
+            chrom_seen = 1
+
+            # VCF sample columns start at column 10:
+            # CHROM POS ID REF ALT QUAL FILTER INFO FORMAT SAMPLE...
+            if (NF > 9) {
+                for (i = 10; i <= NF; i++) {
+                    if (!($i in registered_samples)) {
+                        missing_samples[$i] = 1
+                    }
+                }
+            }
+        }
+
+        END {
+            if (!chrom_seen) {
+                print "ERROR\tCould not find #CHROM header line, so VCF samples could not be checked."
+                exit 0
+            }
+
+            missing_count = 0
+            missing_list = ""
+
+            for (sample in missing_samples) {
+                missing_count++
+
+                if (missing_count <= 20) {
+                    if (missing_list == "") {
+                        missing_list = sample
+                    } else {
+                        missing_list = missing_list "," sample
+                    }
+                }
+            }
+
+            if (missing_count > 0) {
+                if (missing_count > 20) {
+                    print "ERROR\tSamples present in VCF but missing from registered metadata: " missing_list ", ... (" missing_count " total missing samples)."
+                } else {
+                    print "ERROR\tSamples present in VCF but missing from registered metadata: " missing_list "."
+                }
+            } else {
+                print "OK\tAll VCF samples are present in registered metadata."
+            }
+        }
+    '
+}
+
+vcf_validator_check() {
+    local vout
+    local rc
+    local errs
+
+    if ! command -v VCFX_validator >/dev/null 2>&1; then
+        print_status "FAIL" "VCFX_validator not found."
+        return 0
+    fi
+
+    vout=$(VCFX_validator 2>&1)
+    rc=$?
+
+    vout=$(printf '%s\n' "$vout" | strip_ansi)
+
+    if (( rc == 0 )) || printf '%s\n' "$vout" | grep -q '^Status:[[:space:]]*PASSED'; then
+        print_status "OK" "VCF passed VCFX_validator."
+        return 0
+    fi
+
+    errs=$(
+        printf '%s\n' "$vout" \
+            | tr -d '\r' \
+            | grep -E '^(ERROR|Error|error):?' \
+            | paste -sd ';' -
+    )
+
+    if [[ -z "$errs" ]]; then
+        errs=$(
+            printf '%s\n' "$vout" \
+                | grep -v '^Status:[[:space:]]*PASSED' \
+                | grep -v '^Lines read' \
+                | grep -v '^$' \
+                | head -n 10 \
+                | paste -sd ';' -
+        )
+    fi
+
+    if [[ -z "$errs" ]]; then
+        print_status "ERROR" "VCFX_validator failed, but no detailed error message was returned. Please check VCF format."
+    else
+        print_status "ERROR" "VCF validation failed: $errs"
+    fi
+
+    return 0
+}
+
+check_vcf_stdin() {
+    local qc_output
+    local rc
+
+    begin_file "VCF" "$file"
+
+    if [[ "$mode" != "analysis" ]]; then
+        err "VCF/BCF files need to be uploaded as ANALYSIS."
+        end_file
+        return $?
+    fi
+
+    if [[ -z "$samples" ]]; then
+        fail "Sample metadata CSV (-s) was not provided to the QC script."
+        end_file
+        return $?
+    fi
+
+    if [[ ! -f "$samples" ]]; then
+        fail "Sample metadata CSV '$samples' was not found."
+        end_file
+        return $?
+    fi
+
+    if [[ "$extension" == "bcf" ]] && ! command -v bcftools >/dev/null 2>&1; then
+        fail "bcftools not found; BCF input cannot be converted to VCF."
+        end_file
+        return $?
+    fi
+
+    qc_output=$(
+        {
+            normalize_vcf_stream \
+                | tee >(vcf_sample_check >&3) \
+                | vcf_validator_check
+        } 3>&1
+    )
+    rc=$?
+
+    qc_output=$(printf '%s\n' "$qc_output" | strip_ansi)
+
+    if (( rc != 0 )); then
+        err "Failed to decompress/read VCF/BCF stream. Please check file integrity and resubmit."
+        end_file
+        return $?
+    fi
+
+    parse_status_lines <<< "$qc_output"
+
+    end_file
+    return $?
+}
 
 ##############################################################################
 # Main
@@ -232,7 +434,30 @@ case "$extension" in
         reject_file "FASTQ" "$file" "FASTQ files need to be uploaded as RUNs."
         exit $?
     fi
+    ;;   
+  vcf|vcf.gz|vcf.bz2)
+    if [[ "$mode" == "run" ]]; then
+        reject_file "VCF" "$file" "VCF/BCF files need to be uploaded as ANALYSIS"
+        exit $?
+    fi
+    
+    if [[ -z "$samples" ]]; then
+        internal_fail_file "VCF" "$file" "Sample metadata CSV (-s) was not provided to the QC script"
+        exit $?
+    fi
+
+    check_vcf "$file"
+    exit $?
     ;;
+  *)
+    echo "[WARNING] FILE $file - unsupported extension; skipping"
+    exit 0
+    ;;
+esac
+
+
+
+
 
 #   bam|bam.gz)
 #     check_bam "$file"
@@ -247,28 +472,3 @@ case "$extension" in
 #         exit $?
 #     fi
 #     ;;
-    
-#   vcf|vcf.gz|vcf.bz2)
-#     if [[ "$mode" == "run" ]]; then
-#         reject_file "VCF" "$file" "VCF/BCF files need to be uploaded as ANALYSIS"
-#         exit $?
-#     fi
-    
-#     if [[ -z "$samples" ]]; then
-#         internal_fail_file "VCF" "$file" "Sample metadata CSV (-s) was not provided to the QC script"
-#         exit $?
-#     fi
-
-#     check_vcf "$file"
-#     exit $?
-#     ;;
-  *)
-    echo "[WARNING] FILE $file - unsupported extension; skipping"
-    exit 0
-    ;;
-esac
-
-
-
-
-
