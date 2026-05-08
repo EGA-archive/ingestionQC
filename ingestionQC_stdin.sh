@@ -488,6 +488,207 @@ check_vcf_stdin() {
 }
 
 ##############################################################################
+# BAM
+##############################################################################
+
+BAM_RECORDS="${BAM_RECORDS:-100000}"
+
+bam_samtools_check() {
+    local check_output
+    local rc
+
+    check_output=$(
+        samtools view -h - 2>/dev/null \
+            | awk -v mode="$mode" -v max_records="$BAM_RECORDS" '
+                function has_flag(flag, bit) {
+                    return int(flag / bit) % 2
+                }
+
+                BEGIN {
+                    header_seen = 0
+                    sq_seen = 0
+                    so = ""
+                    records_seen = 0
+                    primary_mapped_seen = 0
+                }
+
+                /^@/ {
+                    header_seen = 1
+
+                    if ($1 == "@SQ") {
+                        sq_seen = 1
+                    }
+
+                    if ($1 == "@HD") {
+                        for (i = 1; i <= NF; i++) {
+                            if ($i ~ /^SO:/) {
+                                so = substr($i, 4)
+                            }
+                        }
+                    }
+
+                    next
+                }
+
+                {
+                    records_seen++
+
+                    flag = $2 + 0
+
+                    # Primary mapped alignment:
+                    #   not unmapped       0x4
+                    #   not secondary      0x100
+                    #   not supplementary  0x800
+                    if (!has_flag(flag, 4) && !has_flag(flag, 256) && !has_flag(flag, 2048)) {
+                        primary_mapped_seen = 1
+                    }
+
+                    if (records_seen >= max_records) {
+                        exit
+                    }
+                }
+
+                END {
+                    if (!header_seen) {
+                        print "ERROR\tBAM header is missing or unreadable."
+                        exit 0
+                    }
+
+                    if (!sq_seen) {
+                        print "ERROR\tBAM header is missing @SQ reference sequence entries."
+                    } else {
+                        print "OK\tBAM header contains @SQ reference sequence entries."
+                    }
+
+                    if (primary_mapped_seen) {
+                        print "OK\tBAM appears to contain primary mapped alignments in the inspected records."
+
+                        if (mode == "run") {
+                            print "ERROR\tThis BAM appears to be ALIGNED; please upload this file as an ANALYSIS, not a RUN."
+                        } else {
+                            print "OK\tAligned BAM uploaded as ANALYSIS."
+                        }
+
+                        if (so == "coordinate") {
+                            print "OK\tAligned BAM header reports coordinate sorting."
+                        } else {
+                            print "ERROR\tAligned BAM is not marked as coordinate sorted in the header (SO:" (so == "" ? "missing" : so) ")."
+                        }
+                    } else {
+                        print "OK\tNo primary mapped alignments detected in the first " max_records " inspected records."
+
+                        if (mode == "run") {
+                            print "OK\tUnaligned BAM uploaded as RUN."
+                        } else {
+                            print "ERROR\tThis BAM appears to be UNALIGNED; please upload this file as a RUN, not an ANALYSIS."
+                        }
+                    }
+                }
+            '
+    )
+    rc=$?
+
+    if (( rc != 0 )); then
+        print_status "ERROR" "samtools failed to read BAM stream. Please check file integrity and BAM format."
+        return 0
+    fi
+
+    printf '%s\n' "$check_output"
+    return 0
+}
+
+bam_refgen_check() {
+    local rfg_output
+    local rc
+    local species
+    local reference
+
+    rfg_output=$(refgenDetector -f - -t BAM/CRAM 2>&1)
+    rc=$?
+
+    rfg_output=$(printf '%s\n' "$rfg_output" | strip_ansi)
+
+    if (( rc != 0 )); then
+        print_status "ERROR" "refgenDetector failed to inspect BAM stream."
+        return 0
+    fi
+
+    species=$(
+        printf '%s\n' "$rfg_output" \
+            | awk -F'Species detected:[[:space:]]*' '/Species detected:/ {print $2; exit}' \
+            | xargs
+    )
+
+    reference=$(
+        printf '%s\n' "$rfg_output" \
+            | awk -F'Reference genome version[[:space:]]*:[[:space:]]*' '/Reference genome version/ {print $2; exit}' \
+            | xargs
+    )
+
+    if [[ -z "$species" ]]; then
+        print_status "ERROR" "refgenDetector produced no species result."
+        return 0
+    fi
+
+    if [[ "$species" != "Homo sapiens" ]]; then
+        print_status "ERROR" "refgenDetector: species is not human ($species)."
+        return 0
+    fi
+
+    if [[ -n "$reference" ]]; then
+        print_status "OK" "refgenDetector detected Homo sapiens reference genome ($reference)."
+    else
+        print_status "OK" "refgenDetector detected Homo sapiens."
+    fi
+
+    return 0
+}
+
+check_bam_stdin() {
+    local qc_output
+    local rc
+
+    begin_file "BAM" "$file"
+
+    if ! command -v samtools >/dev/null 2>&1; then
+        fail "samtools not found."
+        end_file
+        return $?
+    fi
+
+    if ! command -v refgenDetector >/dev/null 2>&1; then
+        fail "refgenDetector not found."
+        end_file
+        return $?
+    fi
+
+    qc_output=$(
+        {
+            cat - \
+                | tee -p >(bam_refgen_check >&3) \
+                | bam_samtools_check
+        } 3>&1
+    )
+    rc=$?
+
+    qc_output=$(printf '%s\n' "$qc_output" | strip_ansi)
+
+    # rc=141 is expected when tee receives SIGPIPE because one QC branch
+    # finished earlier than the other. This is not fatal if QC output exists.
+    if (( rc != 0 )) && [[ -z "$qc_output" ]]; then
+        err "BAM stream processing failed before QC results could be collected. Please check file integrity and BAM format."
+        end_file
+        return $?
+    fi
+
+    parse_status_lines <<< "$qc_output"
+
+    end_file
+    return $?
+}
+
+
+##############################################################################
 # Main
 ##############################################################################
 
