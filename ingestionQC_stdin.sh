@@ -445,7 +445,7 @@ check_vcf_stdin() {
     qc_output=$(
         {
             normalize_vcf_stream \
-                | tee >(vcf_sample_check >&3) \
+                | tee -p >(vcf_sample_check >&3) \
                 | vcf_validator_check
         } 3>&1
     )
