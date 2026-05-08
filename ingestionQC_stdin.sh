@@ -713,6 +713,10 @@ case "$extension" in
     check_vcf_stdin
     exit $?
     ;;
+    bam)
+        check_bam_stdin
+        exit $?
+        ;;
   *)
     echo "[WARNING] FILE $file - unsupported extension; skipping"
     exit 0
