@@ -930,7 +930,7 @@ case "$extension" in
         ;;
 
     *)
-        echo "[WARNING] FILE $file - unsupported extension; skipping"
+        printf '[FAIL] FILE %s - unsupported extension; skipping\n' "$file"
         exit 0
         ;;
 esac
