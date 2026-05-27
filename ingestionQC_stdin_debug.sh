@@ -557,7 +557,7 @@ check_vcf_stdin() {
 # BAM
 ##############################################################################
 
-BAM_RECORDS="${BAM_RECORDS:-2000000}"
+BAM_RECORDS="${BAM_RECORDS:-100000000}"
 
 bam_samtools_check() {
     debug_log "bam_samtools_check: started"
