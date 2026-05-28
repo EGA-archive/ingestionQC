@@ -114,6 +114,60 @@ parse_status_lines() {
     done
 }
 
+parse_bam_status_lines() {
+    local line
+    local samtools_errors=()
+    local other_errors=()
+    local fails=()
+    local oks=()
+
+    while IFS= read -r line; do
+        case "$line" in
+            OK$'\t'*)
+                oks+=("${line#OK	}")
+                ;;
+            FAIL$'\t'*)
+                fails+=("${line#FAIL	}")
+                ;;
+            ERROR$'\t'samtools*|ERROR$'\t'BAM\ header*)
+                samtools_errors+=("${line#ERROR	}")
+                ;;
+            ERROR$'\t'refgenDetector*)
+                other_errors+=("${line#ERROR	}")
+                ;;
+            ERROR$'\t'*)
+                other_errors+=("${line#ERROR	}")
+                ;;
+            "")
+                ;;
+            *)
+                other_errors+=("Unexpected QC output: $line")
+                ;;
+        esac
+    done
+
+    # If samtools/header errors exist, report those first and suppress
+    # secondary refgenDetector errors caused by the same malformed stream.
+    if ((${#samtools_errors[@]})); then
+        for msg in "${samtools_errors[@]}"; do
+            err "$msg"
+        done
+        return 0
+    fi
+
+    for msg in "${other_errors[@]}"; do
+        err "$msg"
+    done
+
+    for msg in "${fails[@]}"; do
+        fail "$msg"
+    done
+
+    for msg in "${oks[@]}"; do
+        ok "$msg"
+    done
+}
+
 ##############################################################################
 # Options
 ##############################################################################
@@ -679,7 +733,7 @@ check_bam_stdin() {
         return $?
     fi
 
-    parse_status_lines <<< "$qc_output"
+    parse_bam_status_lines <<< "$qc_output"
 
     end_file
     return $?
