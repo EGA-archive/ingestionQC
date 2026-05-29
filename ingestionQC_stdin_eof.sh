@@ -61,6 +61,7 @@ usage() {
     echo "  CRAM_RECORDS=N           Number of CRAM records inspected, default 100000"
     echo "  BAM_BGZF_CHECK=PATH      Path to bam_bgzf_check.py, default: same directory as this script"
     echo "  BAM_BGZF_NO_CRC=1        Faster BAM BGZF check without CRC/ISIZE validation"
+    echo "  CRAM_EOF_CHECK=PATH      Path to cram_eof_check.py, default: same directory as this script"
     exit 1
 }
 
@@ -140,8 +141,10 @@ samples=""
 VCF_RECORDS="${VCF_RECORDS:-100000}"
 BAM_RECORDS="${BAM_RECORDS:-100000}"
 CRAM_RECORDS="${CRAM_RECORDS:-100000}"
+
 BAM_BGZF_CHECK="${BAM_BGZF_CHECK:-$SCRIPT_DIR/bam_bgzf_check.py}"
 BAM_BGZF_NO_CRC="${BAM_BGZF_NO_CRC:-0}"
+CRAM_EOF_CHECK="${CRAM_EOF_CHECK:-$SCRIPT_DIR/cram_eof_check.py}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -747,6 +750,34 @@ check_bam_stdin() {
 # CRAM
 ##############################################################################
 
+cram_eof_check() {
+    local eof_output
+    local rc
+
+    if [[ ! -x "$CRAM_EOF_CHECK" ]]; then
+        print_status "FAIL" "CRAM EOF checker not found or not executable: $CRAM_EOF_CHECK."
+        return 0
+    fi
+
+    eof_output=$("$CRAM_EOF_CHECK" 2>/dev/null)
+    rc=$?
+
+    eof_output=$(printf '%s\n' "$eof_output" | strip_ansi)
+
+    if [[ -n "$eof_output" ]]; then
+        printf '%s\n' "$eof_output"
+        return 0
+    fi
+
+    if (( rc != 0 )); then
+        print_status "ERROR" "CRAM EOF check failed without a detailed error message."
+    else
+        print_status "OK" "CRAM EOF check passed."
+    fi
+
+    return 0
+}
+
 cram_samtools_check() {
     local check_output
     local rc
@@ -929,11 +960,20 @@ check_cram_stdin() {
         return $?
     fi
 
+    if [[ ! -x "$CRAM_EOF_CHECK" ]]; then
+        fail "CRAM EOF checker not found or not executable: $CRAM_EOF_CHECK."
+        end_file
+        return $?
+    fi
+
     qc_output=$(
         {
             cat - \
-                | tee -p >(cram_refgen_check >&3) \
-                | cram_samtools_check
+                | tee -p \
+                    >(cram_eof_check >&3) \
+                    >(cram_refgen_check >&3) \
+                    >(cram_samtools_check >&3) \
+                > /dev/null
         } 3>&1
     )
     rc=$?
